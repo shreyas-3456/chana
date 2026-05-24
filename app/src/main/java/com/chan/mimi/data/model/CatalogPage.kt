@@ -46,3 +46,56 @@ data class ThreadDto(
     fun safeReplyCount() = replyCount ?: 0
     fun safeImageCount() = imageCount ?: 0
 }
+
+// Replies in a thread — from /{board}/thread/{no}.json
+data class ThreadReplyResponse(
+    @SerializedName("posts")
+    val posts: List<PostDto>
+)
+
+data class PostDto(
+    @SerializedName("no")
+    val id: Long,
+
+    @SerializedName("name")
+    val name: String?,
+
+    @SerializedName("com")
+    val comment: String?,
+
+    @SerializedName("tim")
+    val imageId: Long? = null,
+
+    @SerializedName("ext")
+    val imageExt: String? = null,
+
+    @SerializedName("time")
+    val unixTime: Long?,
+
+    @SerializedName("sub")
+    val subject: String?,
+
+    @SerializedName("filename")
+    val filename: String?,
+
+    @SerializedName("fsize")
+    val fileSize: Long?,
+
+    @SerializedName("w")
+    val imageWidth: Int?,
+
+    @SerializedName("h")
+    val imageHeight: Int?,
+
+    @SerializedName("resto")
+    val replyToId: Long?   // 0 = OP post
+) {
+    fun safeName()    = name    ?: "Anonymous"
+    fun safeComment() = comment ?: ""
+    fun safeSubject() = subject ?: ""
+    fun isOp()        = replyToId == 0L
+    fun hasImage()    = imageId != null && imageExt != null
+    fun imageUrl(boardTag: String) =
+        if (hasImage()) "https://i.4cdn.org/$boardTag/$imageId$imageExt" else null
+    fun fileSizeKb()  = fileSize?.let { "%.2f KB".format(it / 1024f) } ?: ""
+}
