@@ -22,6 +22,8 @@ import com.chan.mimi.ui.components.*
 import com.chan.mimi.ui.theme.ChanGreen
 import com.chan.mimi.ui.theme.ElevatedDark
 import com.chan.mimi.ui.theme.TextLink
+import com.chan.mimi.ui.components.ChanHtmlText
+import com.chan.mimi.ui.components.QuoteGreen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -210,21 +212,20 @@ fun ThreadCard(
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                if (thread.safeSubject().isNotEmpty()) {    // ← was thread.subject.isNotEmpty()
+                if (thread.safeSubject().isNotEmpty()) {
                     ChanText(
-                        text     = thread.safeSubject(),    // ← was thread.subject
+                        text     = thread.safeSubject(),
                         variant  = TextVariant.Username,
-                        color    = MaterialTheme.colorScheme.onSurface,
+                        color    = QuoteGreen,              // ← green title
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                 }
-                ChanText(
-                    text     = cleanComment,
-                    variant  = TextVariant.Body,
+                ChanHtmlText(                               // ← replaces ChanText
+                    html     = thread.safeComment(),
                     maxLines = 5,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
