@@ -11,6 +11,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 
@@ -22,10 +23,12 @@ private const val REPLY_TAG = "REPLY_LINK"
 
 @Composable
 fun ChanHtmlText(
-    html       : String,
-    modifier   : Modifier    = Modifier,
-    maxLines   : Int         = Int.MAX_VALUE,
-    onReplyClick : ((Long) -> Unit)? = null   // called with postNo when >>postNo tapped
+    html           : String,
+    modifier       : Modifier = Modifier,
+    maxLines       : Int = Int.MAX_VALUE,
+    textColor      : Color = MaterialTheme.colorScheme.onSurface,
+    textDecoration : TextDecoration? = null,
+    onReplyClick   : ((Long) -> Unit)? = null   // called with postNo when >>postNo tapped
 ) {
     val annotated = remember(html) {
         buildAnnotatedString {
@@ -83,7 +86,15 @@ fun ChanHtmlText(
                                 append(linkText)
                                 if (replyNo != null) {
                                     // Orange for reply-to-post links
-                                    addStyle(SpanStyle(color = ReplyOrange, fontWeight = FontWeight.Medium), start, length)
+                                    addStyle(
+                                        SpanStyle(
+                                            color          = ReplyOrange,
+                                            fontWeight     = FontWeight.Medium,
+                                            textDecoration = TextDecoration.Underline
+                                        ),
+                                        start,
+                                        length
+                                    )
                                     addStringAnnotation(REPLY_TAG, replyNo.toString(), start, length)
                                 } else {
                                     addStyle(SpanStyle(color = LinkBlue), start, length)
@@ -107,8 +118,10 @@ fun ChanHtmlText(
         }
     }
 
-    val textColor = MaterialTheme.colorScheme.onSurface
-    val textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor)
+    val textStyle = MaterialTheme.typography.bodyMedium.copy(
+        color = textColor,
+        textDecoration = textDecoration
+    )
 
     if (onReplyClick != null) {
         ClickableText(

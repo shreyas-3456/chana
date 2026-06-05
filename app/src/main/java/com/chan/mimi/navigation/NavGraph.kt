@@ -38,6 +38,8 @@ object Routes {
     const val EDIT_BOARDS  = "edit_boards"
     const val BOARD_SEARCH = "board_search"
     const val THREAD_DETAIL = "thread_detail"
+    const val SAVED         = "saved"
+    const val SAVED_THREAD_DETAIL = "saved_thread_detail"
 }
 
 @Composable
@@ -63,7 +65,7 @@ fun ChanNavGraph(
             val showBottomBar = currentRoute in listOf(
                 Routes.HOME,
                 Routes.THREAD_LIST,
-                "saved",
+                Routes.SAVED,
                 "settings"
             )
             if (showBottomBar) {
@@ -106,8 +108,16 @@ fun ChanNavGraph(
 
                     // ── Saved tab ────────────────────────────
                     NavigationBarItem(
-                        selected = currentRoute == "saved",
-                        onClick  = { /* TODO */ },
+                        selected = currentRoute == Routes.SAVED,
+                        onClick  = {
+                            if (currentRoute != Routes.SAVED) {
+                                navController.navigate(Routes.SAVED) {
+                                    popUpTo(Routes.HOME) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState    = true
+                                }
+                            }
+                        },
                         icon     = { Icon(Icons.Default.Bookmark, contentDescription = "Saved") },
                         label    = { ChanText("Saved", variant = TextVariant.Meta) },
                         colors   = navItemColors()
@@ -179,6 +189,32 @@ fun ChanNavGraph(
                     onBackClick = { navController.popBackStack() },
                     onDone      = { navController.popBackStack(Routes.HOME, false) },
                     viewModel   = homeViewModel
+                )
+            }
+
+            composable(Routes.SAVED) {
+                com.chan.mimi.ui.screens.saved.SavedScreen(
+                    innerPadding = innerPadding,
+                    onThreadClick = { detail ->
+                        navController.navigate("${Routes.SAVED_THREAD_DETAIL}/${detail.boardTag}/${detail.thread.id}")
+                    }
+                )
+            }
+
+            composable(
+                route = "${Routes.SAVED_THREAD_DETAIL}/{boardTag}/{threadNo}",
+                arguments = listOf(
+                    androidx.navigation.navArgument("boardTag") { type = androidx.navigation.NavType.StringType },
+                    androidx.navigation.navArgument("threadNo") { type = androidx.navigation.NavType.LongType }
+                )
+            ) { backStackEntry ->
+                val boardTag = backStackEntry.arguments?.getString("boardTag") ?: ""
+                val threadNo = backStackEntry.arguments?.getLong("threadNo") ?: 0L
+                com.chan.mimi.ui.screens.saved.SavedThreadDetailScreen(
+                    boardTag    = boardTag,
+                    threadNo    = threadNo,
+                    threadTitle = threadNo.toString(),
+                    onBackClick = { navController.popBackStack() }
                 )
             }
         }

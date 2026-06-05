@@ -1,13 +1,18 @@
 package com.chan.mimi.ui.screens.threads
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chan.mimi.data.model.PostDto
+import com.chan.mimi.data.model.ThreadDto
 import com.chan.mimi.data.repository.ChanRepository
+import com.chan.mimi.data.repository.SavedThreadsRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -17,15 +22,22 @@ sealed class ThreadDetailUiState {
     data class Error(val message: String)        : ThreadDetailUiState()
 }
 
-class ThreadDetailViewModel : ViewModel() {
+class ThreadDetailViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = ChanRepository()
+    private val savedThreadsRepository = SavedThreadsRepository.getInstance(application)
 
     private val _uiState     = MutableStateFlow<ThreadDetailUiState>(ThreadDetailUiState.Loading)
     val uiState: StateFlow<ThreadDetailUiState> = _uiState
 
     private val _isSaved     = MutableStateFlow(false)
     val isSaved: StateFlow<Boolean> = _isSaved
+
+    private val _isSaving    = MutableStateFlow(false)
+    val isSaving: StateFlow<Boolean> = _isSaving
+
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
 
     private val _hasNewPosts = MutableStateFlow(false)
     val hasNewPosts: StateFlow<Boolean> = _hasNewPosts
@@ -38,9 +50,15 @@ class ThreadDetailViewModel : ViewModel() {
     private var currentBoard    = ""
     private var currentThreadNo = 0L
 
-    fun startPolling(board: String, threadNo: Long) {
+    /**
+     * The locally-merged post list. Deleted posts are preserved here with isDeleted = true
+     * so they remain visible in the UI even after the API stops returning them.
+     */
+    private var localPosts: List<PostDto> = emptyList()
+
+    fun startPolling(board: String, threadNo: Long, forceRestart: Boolean = false) {
         // Already polling this exact thread — don't restart
-        if (currentBoard == board && currentThreadNo == threadNo && pollingJob?.isActive == true) return
+        if (!forceRestart && currentBoard == board && currentThreadNo == threadNo && pollingJob?.isActive == true) return
 
         val switchingThread = currentBoard != board || currentThreadNo != threadNo
         currentBoard    = board
@@ -50,13 +68,21 @@ class ThreadDetailViewModel : ViewModel() {
         // Only reset to Loading + clear counts when switching to a different thread
         if (switchingThread) {
             lastPostCount      = 0
+            localPosts         = emptyList()
             _hasNewPosts.value = false
             _uiState.value     = ThreadDetailUiState.Loading
         }
 
+        // Check if saved
+        viewModelScope.launch {
+            _isSaved.value = savedThreadsRepository.isThreadSaved(board, threadNo)
+        }
+
         pollingJob = viewModelScope.launch {
             // First load — cache-first, shows immediately if cached
-            fetchThread(board, threadNo, forceRefresh = false, applyImmediately = true)
+            if (!forceRestart) {
+                fetchThread(board, threadNo, forceRefresh = false, applyImmediately = true)
+            }
 
             // Poll every 30s, ticking the countdown each second
             while (isActive) {
@@ -75,12 +101,56 @@ class ThreadDetailViewModel : ViewModel() {
         pollingJob?.cancel()
     }
 
+    /** Manual reload triggered by the refresh button — always applies immediately. */
+    fun reloadNow() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            repository.invalidateThread(currentBoard, currentThreadNo)
+            fetchThread(currentBoard, currentThreadNo, forceRefresh = true, applyImmediately = true)
+            _isRefreshing.value = false
+            // Restart polling to reset the 30s countdown timer
+            startPolling(currentBoard, currentThreadNo, forceRestart = true)
+        }
+    }
+
     fun applyNewPosts(board: String, threadNo: Long) {
         _hasNewPosts.value = false
         repository.invalidateThread(board, threadNo)
         viewModelScope.launch {
             fetchThread(board, threadNo, forceRefresh = true, applyImmediately = true)
         }
+    }
+
+    /**
+     * Merge [newPosts] from API with [localPosts]:
+     * - Posts in localPosts missing from newPosts → preserved as isDeleted = true
+     * - Posts present in newPosts → kept/updated with isDeleted = false
+     * - New posts (not yet in localPosts) → appended at the end
+     * The result keeps the original ordering with deleted stubs in place.
+     */
+    private fun mergePosts(localPosts: List<PostDto>, newPosts: List<PostDto>): List<PostDto> {
+        if (localPosts.isEmpty()) return newPosts
+
+        val newById = newPosts.associateBy { it.id }
+        val merged  = mutableListOf<PostDto>()
+
+        // Walk existing local list in order, marking anything missing as deleted
+        for (local in localPosts) {
+            val fresh = newById[local.id]
+            if (fresh != null) {
+                merged.add(fresh) // updated from API, isDeleted = false
+            } else {
+                merged.add(local.asDeleted()) // dropped by API → mark deleted
+            }
+        }
+
+        // Append genuinely new posts (IDs not seen in local list)
+        val localIds = localPosts.map { it.id }.toHashSet()
+        for (post in newPosts) {
+            if (post.id !in localIds) merged.add(post)
+        }
+
+        return merged
     }
 
     private suspend fun fetchThread(
@@ -92,22 +162,31 @@ class ThreadDetailViewModel : ViewModel() {
         val result = repository.getThread(board, threadNo, forceRefresh)
 
         result.fold(
-            onSuccess = { posts ->
-                val newCount = posts.size
+            onSuccess = { apiPosts ->
+                val merged   = mergePosts(localPosts, apiPosts)
+                val newCount = apiPosts.size  // count only live posts, not deleted stubs
                 when {
-                    // First load or user tapped banner — always apply immediately
+                    // First load or user tapped banner / reload — always apply
                     applyImmediately -> {
-                        _uiState.value     = ThreadDetailUiState.Success(posts)
+                        localPosts         = merged
+                        _uiState.value     = ThreadDetailUiState.Success(merged)
                         lastPostCount      = newCount
                         _hasNewPosts.value = false
                     }
-                    // Background poll — only notify if we have more posts than before
+                    // Background poll — only notify if we have more live posts than before
                     newCount > lastPostCount -> {
+                        // Apply the merge silently so deleted stubs are tracked,
+                        // but show the bell banner so user can acknowledge
+                        localPosts         = merged
                         _hasNewPosts.value = true
-                        // Don't update lastPostCount here — wait for user to tap banner
-                        // so the count difference stays valid until they acknowledge it
+                        // Don't update lastPostCount — wait for user to tap banner
                     }
-                    // Same count — nothing to do
+                    // Same or fewer live posts (possible deletion) — apply silently
+                    else -> {
+                        localPosts     = merged
+                        _uiState.value = ThreadDetailUiState.Success(merged)
+                        lastPostCount  = newCount
+                    }
                 }
             },
             onFailure = {
@@ -119,10 +198,53 @@ class ThreadDetailViewModel : ViewModel() {
         )
     }
 
-    fun toggleSave() { _isSaved.value = !_isSaved.value }
+    fun toggleSave() {
+        val posts = (uiState.value as? ThreadDetailUiState.Success)?.posts ?: return
+        val opPost = posts.firstOrNull { it.id == currentThreadNo } ?: posts.firstOrNull() ?: return
+        val replyCount = posts.size - 1
+        val imageCount = posts.count { it.hasImage() }
+        val threadDto = opPost.toThreadDto(replyCount, imageCount)
+
+        viewModelScope.launch {
+            if (_isSaved.value) {
+                // Delete saved thread
+                savedThreadsRepository.deleteThread(currentBoard, currentThreadNo)
+                _isSaved.value = false
+                android.widget.Toast.makeText(getApplication(), "Thread removed from saved", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                // Save thread
+                _isSaving.value = true
+                android.widget.Toast.makeText(getApplication(), "Saving thread offline...", android.widget.Toast.LENGTH_SHORT).show()
+                try {
+                    savedThreadsRepository.saveThread(currentBoard, threadDto, posts)
+                    _isSaved.value = true
+                    android.widget.Toast.makeText(getApplication(), "Thread saved offline!", android.widget.Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e("ThreadDetailViewModel", "Failed to save thread: ${e.message}", e)
+                    android.widget.Toast.makeText(getApplication(), "Failed to save thread: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                } finally {
+                    _isSaving.value = false
+                }
+            }
+        }
+    }
 
     override fun onCleared() {
         super.onCleared()
         pollingJob?.cancel()
     }
+}
+
+private fun PostDto.toThreadDto(replyCount: Int, imageCount: Int): ThreadDto {
+    return ThreadDto(
+        id = id,
+        name = name,
+        comment = comment,
+        imageId = imageId,
+        imageExt = imageExt,
+        replyCount = replyCount,
+        imageCount = imageCount,
+        unixTime = unixTime,
+        subject = subject
+    )
 }

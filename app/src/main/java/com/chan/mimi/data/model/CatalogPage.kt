@@ -88,7 +88,10 @@ data class PostDto(
     val imageHeight: Int?,
 
     @SerializedName("resto")
-    val replyToId: Long?   // 0 = OP post
+    val replyToId: Long?,   // 0 = OP post
+
+    // Not from API — set in-memory when a post disappears from a subsequent fetch
+    val isDeleted: Boolean = false
 ) {
     fun safeName()    = name    ?: "Anonymous"
     fun safeComment() = comment ?: ""
@@ -98,4 +101,10 @@ data class PostDto(
     fun imageUrl(boardTag: String) =
         if (hasImage()) "https://i.4cdn.org/$boardTag/$imageId$imageExt" else null
     fun fileSizeKb()  = fileSize?.let { "%.2f KB".format(it / 1024f) } ?: ""
+    fun repliesTo(postId: Long): Boolean {
+        val com = safeComment()
+        return com.contains(">>$postId") || com.contains("&gt;&gt;$postId")
+    }
+    /** Return a copy of this post stamped as deleted. */
+    fun asDeleted() = copy(isDeleted = true)
 }

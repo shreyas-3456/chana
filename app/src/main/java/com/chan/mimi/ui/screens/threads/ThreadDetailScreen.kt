@@ -4,8 +4,10 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -26,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,10 +42,19 @@ import com.chan.mimi.ui.theme.TextLink
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.zIndex
 
 // ── Reply popup state ─────────────────────────────────────────
 data class ReplyPopup(
     val quotedPost    : com.chan.mimi.data.model.PostDto? = null,
+    val sourcePost    : com.chan.mimi.data.model.PostDto? = null,
     val repliesToPost : com.chan.mimi.data.model.PostDto? = null,
     val replies       : List<com.chan.mimi.data.model.PostDto> = emptyList()
 )
@@ -58,9 +70,23 @@ fun ThreadDetailScreen(
 ) {
     val uiState     by viewModel.uiState.collectAsStateWithLifecycle()
     val isSaved     by viewModel.isSaved.collectAsStateWithLifecycle()
+    val isSaving    by viewModel.isSaving.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val hasNewPosts by viewModel.hasNewPosts.collectAsStateWithLifecycle()
     val pollCountdown by viewModel.pollCountdown.collectAsStateWithLifecycle()
     val context     = LocalContext.current
+
+    val rotationTransition = rememberInfiniteTransition(label = "rotation")
+    val rotation by rotationTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotationAngle"
+    )
+    val rotationAngle = if (isRefreshing) rotation else 0f
     val listState   = rememberLazyListState()
     val scope       = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
@@ -70,6 +96,41 @@ fun ThreadDetailScreen(
 
     // Reply popup — null means hidden
     var replyPopup by remember { mutableStateOf<ReplyPopup?>(null) }
+
+    var viewerStartIndex by remember { mutableStateOf<Int?>(null) }
+    var activeIndex by remember { mutableStateOf(0) }
+
+    val posts = (uiState as? ThreadDetailUiState.Success)?.posts ?: emptyList()
+    val displayedPosts = remember(searchQuery, posts) {
+        if (searchQuery.isEmpty()) posts
+        else posts.filter {
+            it.safeComment().contains(searchQuery, ignoreCase = true) ||
+                    it.safeName().contains(searchQuery, ignoreCase = true)
+        }
+    }
+    val imagePosts = remember(displayedPosts) {
+        displayedPosts.filter { it.hasImage() }
+    }
+
+    // Synchronize background scrolling with active index of viewer
+    LaunchedEffect(viewerStartIndex, activeIndex) {
+        if (viewerStartIndex != null && activeIndex >= 0 && activeIndex < imagePosts.size) {
+            val targetPost = imagePosts[activeIndex]
+            val originalIndex = displayedPosts.indexOf(targetPost)
+            if (originalIndex != -1) {
+                val lazyListIndex = originalIndex + 2 // +2 for search bar and spacer
+                val layoutInfo = listState.layoutInfo
+                val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+                val itemSize = layoutInfo.visibleItemsInfo.firstOrNull { it.index == lazyListIndex }?.size ?: 0
+                val offset = if (viewportHeight > 0) {
+                    (viewportHeight - itemSize) / 2
+                } else {
+                    0
+                }
+                listState.animateScrollToItem(lazyListIndex, -offset)
+            }
+        }
+    }
 
     DisposableEffect(boardTag, threadNo) {
         viewModel.startPolling(boardTag, threadNo)
@@ -145,15 +206,39 @@ fun ThreadDetailScreen(
                         )
                     }
 
-                    // Bookmark
-                    IconButton(onClick = { viewModel.toggleSave() }) {
+                    // Reload
+                    IconButton(
+                        onClick = { viewModel.reloadNow() },
+                        enabled = !isRefreshing && !isSaving
+                    ) {
                         Icon(
-                            imageVector        = if (isSaved) Icons.Default.Bookmark
-                            else Icons.Default.BookmarkBorder,
-                            contentDescription = "Save thread",
-                            tint               = if (isSaved) ChanGreen
-                            else MaterialTheme.colorScheme.onBackground
+                            imageVector        = Icons.Default.Refresh,
+                            contentDescription = "Reload thread",
+                            tint               = MaterialTheme.colorScheme.onBackground,
+                            modifier           = Modifier.graphicsLayer { rotationZ = rotationAngle }
                         )
+                    }
+
+                    // Bookmark
+                    IconButton(
+                        onClick = { viewModel.toggleSave() },
+                        enabled = !isRefreshing && !isSaving
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                color = ChanGreen,
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector        = if (isSaved) Icons.Default.Bookmark
+                                else Icons.Default.BookmarkBorder,
+                                contentDescription = "Save thread",
+                                tint               = if (isSaved) ChanGreen
+                                else MaterialTheme.colorScheme.onBackground
+                            )
+                        }
                     }
 
                     // Three-dot menu
@@ -226,7 +311,31 @@ fun ThreadDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                // Swipe right → go back (only when fullscreen viewer is NOT open)
+                .pointerInput(viewerStartIndex) {
+                    if (viewerStartIndex != null) return@pointerInput
+                    var totalDragX = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDragX = 0f },
+                        onDragEnd = {
+                            if (totalDragX > 120f) onBackClick()
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            totalDragX += dragAmount
+                            change.consume()
+                        }
+                    )
+                }
         ) {
+            if (isRefreshing) {
+                LinearProgressIndicator(
+                    color = ChanGreen,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .zIndex(1f)
+                )
+            }
             when (uiState) {
 
                 is ThreadDetailUiState.Loading -> {
@@ -252,15 +361,6 @@ fun ThreadDetailScreen(
                 }
 
                 is ThreadDetailUiState.Success -> {
-                    val posts = (uiState as ThreadDetailUiState.Success).posts
-
-                    val displayedPosts = remember(searchQuery, posts) {
-                        if (searchQuery.isEmpty()) posts
-                        else posts.filter {
-                            it.safeComment().contains(searchQuery, ignoreCase = true) ||
-                                    it.safeName().contains(searchQuery, ignoreCase = true)
-                        }
-                    }
 
                     LazyColumn(
                         state               = listState,
@@ -322,21 +422,34 @@ fun ThreadDetailScreen(
                             PostCard(
                                 post              = post,
                                 boardTag          = boardTag,
+                                threadNo          = threadNo,
                                 allPosts          = posts,
-                                onReplyClick      = { postNo ->
-                                    // >>postNo tapped — show that post as quoted
+                                onReplyClick      = { postNo, source ->
+                                    // >>postNo tapped — show that post as quoted along with the source post
                                     val quoted = posts.find { it.id == postNo }
-                                    if (quoted != null) replyPopup = ReplyPopup(quotedPost = quoted)
+                                    if (quoted != null) {
+                                        replyPopup = ReplyPopup(
+                                            quotedPost = quoted,
+                                            sourcePost = source
+                                        )
+                                    }
                                 },
                                 onShowRepliesClick = { targetPost ->
                                     // ←← icon tapped — show target post + all posts replying to it
                                     val replies = posts.filter { p ->
-                                        p.safeComment().contains(">>${targetPost.id}")
+                                        p.repliesTo(targetPost.id)
                                     }
                                     replyPopup = ReplyPopup(
                                         repliesToPost = targetPost,
                                         replies       = replies
                                     )
+                                },
+                                onImageClick = { clickedPost ->
+                                    val index = imagePosts.indexOf(clickedPost)
+                                    if (index != -1) {
+                                        activeIndex = index
+                                        viewerStartIndex = index
+                                    }
                                 }
                             )
                         }
@@ -427,6 +540,72 @@ fun ThreadDetailScreen(
                     )
                 }
             }
+
+            // Fullscreen Image Viewer Overlay
+            if (viewerStartIndex != null) {
+                val viewerItems = remember(imagePosts, posts, boardTag, threadNo) {
+                    val sdf = java.text.SimpleDateFormat("EEEE yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                    imagePosts.map { post ->
+                        val localFile = com.chan.mimi.data.repository.SavedThreadsHelper.getLocalFullFile(context, boardTag, threadNo, post.id, post.imageExt ?: "")
+                        val fileUrl = if (localFile.exists()) {
+                            android.net.Uri.fromFile(localFile).toString()
+                        } else {
+                            post.imageUrl(boardTag)!!
+                        }
+                        val ext     = post.imageExt?.removePrefix(".")?.uppercase() ?: ""
+                        val replyPosts = posts.filter { p ->
+                            p.repliesTo(post.id)
+                        }
+                        val itemReplies = replyPosts.map { r ->
+                            val localReplyFile = com.chan.mimi.data.repository.SavedThreadsHelper.getLocalFullFile(context, boardTag, threadNo, r.id, r.imageExt ?: "")
+                            val rFileUrl = if (localReplyFile.exists()) {
+                                android.net.Uri.fromFile(localReplyFile).toString()
+                            } else {
+                                r.imageUrl(boardTag)
+                            }
+                            val rExt     = r.imageExt?.removePrefix(".")?.uppercase() ?: ""
+                            ImageViewerItem(
+                                imageUrl    = rFileUrl ?: "",
+                                fileUrl     = rFileUrl ?: "",
+                                filename    = r.filename?.let { "${it}${r.imageExt ?: ""}" } ?: "",
+                                fileInfo    = if (r.hasImage()) "$rExt | ${r.fileSizeKb()}  ${r.imageWidth}x${r.imageHeight}" else "",
+                                postUrl     = "https://boards.4chan.org/$boardTag/thread/$threadNo#p${r.id}",
+                                username    = r.safeName(),
+                                postId      = r.id.toString(),
+                                subject     = r.safeSubject(),
+                                commentHtml = r.safeComment(),
+                                timeStr     = r.unixTime?.let { sdf.format(java.util.Date(it * 1000L)) } ?: "",
+                                timeAgo     = r.unixTime?.let { relativeTime(it) } ?: ""
+                            )
+                        }
+                        ImageViewerItem(
+                            imageUrl    = fileUrl,
+                            fileUrl     = fileUrl,
+                            filename    = "${post.filename ?: post.imageId}${post.imageExt ?: ""}",
+                            fileInfo    = "$ext | ${post.fileSizeKb()}  ${post.imageWidth}x${post.imageHeight}",
+                            postUrl     = "https://boards.4chan.org/$boardTag/thread/$threadNo#p${post.id}",
+                            username    = post.safeName(),
+                            postId      = post.id.toString(),
+                            subject     = post.safeSubject(),
+                            commentHtml = post.safeComment(),
+                            timeStr     = post.unixTime?.let { sdf.format(java.util.Date(it * 1000L)) } ?: "",
+                            timeAgo     = post.unixTime?.let { relativeTime(it) } ?: "",
+                            replyCount  = itemReplies.size,
+                            replies     = itemReplies
+                        )
+                    }
+                }
+                FullscreenImageViewer(
+                    items          = viewerItems,
+                    initialIndex   = viewerStartIndex!!,
+                    onIndexChanged = { index -> activeIndex = index },
+                    onDismiss      = { viewerStartIndex = null },
+                    onSwipeLeftToRight = {
+                        viewerStartIndex = null
+                        onBackClick()
+                    }
+                )
+            }
         }
     }
 
@@ -472,27 +651,41 @@ fun ThreadDetailScreen(
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
 
-                    // ── Always show the target post at the top ─────────
-                    val topPost = popup.quotedPost ?: popup.repliesToPost
-                    topPost?.let { post ->
+                    if (popup.quotedPost != null && popup.sourcePost != null) {
+                        // Scenario A: Clicked on a reply link (>>A) in post B
+                        // Render quotedPost (post A) at the top
                         PopupPostItem(
-                            post         = post,
+                            post         = popup.quotedPost,
                             boardTag     = boardTag,
-                            onReplyClick = { postNo ->
-                                val allPosts = (uiState as? ThreadDetailUiState.Success)?.posts
-                                val found = allPosts?.find { it.id == postNo }
+                            threadNo     = threadNo,
+                            allPosts     = posts,
+                            onReplyClick = { postNo, source ->
+                                val found = posts.find { it.id == postNo }
                                 if (found != null) {
-                                    val replies = allPosts.filter { p ->
-                                        p.safeComment().contains(">>${found.id}")
-                                    }
-                                    replyPopup = ReplyPopup(quotedPost = found, replies = replies)
+                                    replyPopup = ReplyPopup(
+                                        quotedPost = found,
+                                        sourcePost = source
+                                    )
+                                }
+                            },
+                            onShowRepliesClick = { targetPost ->
+                                val replies = posts.filter { p -> p.repliesTo(targetPost.id) }
+                                replyPopup = ReplyPopup(
+                                    repliesToPost = targetPost,
+                                    replies       = replies
+                                )
+                            },
+                            onImageClick = { clickedPost ->
+                                val index = imagePosts.indexOf(clickedPost)
+                                if (index != -1) {
+                                    activeIndex = index
+                                    viewerStartIndex = index
+                                    replyPopup = null
                                 }
                             }
                         )
-                    }
 
-                    // ── Replies section (all posts quoting the target) ──
-                    if (popup.replies.isNotEmpty()) {
+                        // Visual connector between quoted post and the reply
                         Row(
                             modifier          = Modifier
                                 .fillMaxWidth()
@@ -501,32 +694,132 @@ fun ThreadDetailScreen(
                         ) {
                             HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
                             ChanText(
-                                text    = "  replies  ",
+                                text    = "  replied by  ",
                                 variant = TextVariant.Meta,
                                 color   = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                             )
                             HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
                         }
-                        popup.replies.forEachIndexed { i, post ->
+
+                        // Render sourcePost (post B, the current reply)
+                        PopupPostItem(
+                            post         = popup.sourcePost,
+                            boardTag     = boardTag,
+                            threadNo     = threadNo,
+                            allPosts     = posts,
+                            onReplyClick = { postNo, source ->
+                                val found = posts.find { it.id == postNo }
+                                if (found != null) {
+                                    replyPopup = ReplyPopup(
+                                        quotedPost = found,
+                                        sourcePost = source
+                                    )
+                                }
+                            },
+                            onShowRepliesClick = { targetPost ->
+                                val replies = posts.filter { p -> p.repliesTo(targetPost.id) }
+                                replyPopup = ReplyPopup(
+                                    repliesToPost = targetPost,
+                                    replies       = replies
+                                )
+                            },
+                            onImageClick = { clickedPost ->
+                                val index = imagePosts.indexOf(clickedPost)
+                                if (index != -1) {
+                                    activeIndex = index
+                                    viewerStartIndex = index
+                                    replyPopup = null
+                                }
+                            }
+                        )
+                    } else {
+                        // Scenario B: Clicked on a replies count box (repliesToPost + replies list)
+                        val topPost = popup.quotedPost ?: popup.repliesToPost
+                        topPost?.let { post ->
                             PopupPostItem(
                                 post         = post,
                                 boardTag     = boardTag,
-                                onReplyClick = { postNo ->
-                                    val allPosts = (uiState as? ThreadDetailUiState.Success)?.posts
-                                    val found = allPosts?.find { it.id == postNo }
+                                threadNo     = threadNo,
+                                allPosts     = posts,
+                                onReplyClick = { postNo, source ->
+                                    val found = posts.find { it.id == postNo }
                                     if (found != null) {
-                                        val replies = allPosts.filter { p ->
-                                            p.safeComment().contains(">>${found.id}")
-                                        }
-                                        replyPopup = ReplyPopup(quotedPost = found, replies = replies)
+                                        replyPopup = ReplyPopup(
+                                            quotedPost = found,
+                                            sourcePost = source
+                                        )
+                                    }
+                                },
+                                onShowRepliesClick = { targetPost ->
+                                    val replies = posts.filter { p -> p.repliesTo(targetPost.id) }
+                                    replyPopup = ReplyPopup(
+                                        repliesToPost = targetPost,
+                                        replies       = replies
+                                    )
+                                },
+                                onImageClick = { clickedPost ->
+                                    val index = imagePosts.indexOf(clickedPost)
+                                    if (index != -1) {
+                                        activeIndex = index
+                                        viewerStartIndex = index
+                                        replyPopup = null
                                     }
                                 }
                             )
-                            if (i < popup.replies.size - 1) {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(vertical = 6.dp),
-                                    color    = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                        }
+
+                        if (popup.replies.isNotEmpty()) {
+                            Row(
+                                modifier          = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
+                                ChanText(
+                                    text    = "  replies  ",
+                                    variant = TextVariant.Meta,
+                                    color   = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                                 )
+                                HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
+                            }
+                            popup.replies.forEachIndexed { i, post ->
+                                PopupPostItem(
+                                    post         = post,
+                                    boardTag     = boardTag,
+                                    threadNo     = threadNo,
+                                    allPosts     = posts,
+                                    onReplyClick = { postNo, source ->
+                                        val found = posts.find { it.id == postNo }
+                                        if (found != null) {
+                                            replyPopup = ReplyPopup(
+                                                quotedPost = found,
+                                                sourcePost = source
+                                            )
+                                        }
+                                    },
+                                    onShowRepliesClick = { targetPost ->
+                                        val replies = posts.filter { p -> p.repliesTo(targetPost.id) }
+                                        replyPopup = ReplyPopup(
+                                            repliesToPost = targetPost,
+                                            replies       = replies
+                                        )
+                                    },
+                                    onImageClick = { clickedPost ->
+                                        val index = imagePosts.indexOf(clickedPost)
+                                        if (index != -1) {
+                                            activeIndex = index
+                                            viewerStartIndex = index
+                                            replyPopup = null
+                                        }
+                                    }
+                                )
+                                if (i < popup.replies.size - 1) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 6.dp),
+                                        color    = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -545,11 +838,23 @@ fun ThreadDetailScreen(
 fun PostCard(
     post               : PostDto,
     boardTag           : String,
+    threadNo           : Long = 0L,
     allPosts           : List<PostDto>  = emptyList(),
-    onReplyClick       : (Long) -> Unit = {},
-    onShowRepliesClick : (PostDto) -> Unit = {}
+    onReplyClick       : (Long, PostDto) -> Unit = { _, _ -> },
+    onShowRepliesClick : (PostDto) -> Unit = {},
+    onImageClick       : (PostDto) -> Unit = {}
 ) {
-    val imageUrl = post.imageUrl(boardTag)
+    val context = LocalContext.current
+    val imageUrl = remember(post.imageId, boardTag, threadNo) {
+        if (post.hasImage()) {
+            val localThumb = com.chan.mimi.data.repository.SavedThreadsHelper.getLocalThumbFile(context, boardTag, threadNo, post.id)
+            if (localThumb.exists()) {
+                localThumb.absolutePath
+            } else {
+                "https://t.4cdn.org/$boardTag/${post.imageId}s.jpg"
+            }
+        } else null
+    }
     val dateStr  = remember(post.unixTime) {
         post.unixTime?.let {
             val sdf = SimpleDateFormat("EEEE yyyy-MM-dd HH:mm:ss", Locale.getDefault())
@@ -562,12 +867,24 @@ fun PostCard(
 
     // Count how many posts in the thread reply to this post
     val replyCount = remember(allPosts, post.id) {
-        allPosts.count { it.safeComment().contains(">>${post.id}") }
+        allPosts.count { it.repliesTo(post.id) }
     }
 
-    ChanCard(modifier = Modifier.fillMaxWidth()) {
+    // Deleted posts get a red-tinted background
+    val cardModifier = if (post.isDeleted) {
+        Modifier
+            .fillMaxWidth()
+            .background(
+                color = Color(0xFFFF4444).copy(alpha = 0.07f),
+                shape = MaterialTheme.shapes.medium
+            )
+    } else {
+        Modifier.fillMaxWidth()
+    }
 
-        // ── Header ────────────────────────────────────────────
+    ChanCard(modifier = cardModifier) {
+
+        // ── Header ──────────────────────────────────────
         Row(
             modifier              = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -577,7 +894,7 @@ fun PostCard(
                 ChanText(
                     text    = post.safeName(),
                     variant = TextVariant.Username,
-                    color   = ChanGreen
+                    color   = if (post.isDeleted) Color(0xFFFF6B6B) else ChanGreen
                 )
                 Spacer(Modifier.width(8.dp))
                 ChanText(
@@ -585,6 +902,22 @@ fun PostCard(
                     variant = TextVariant.Meta,
                     color   = TextLink
                 )
+                // [DELETED] badge
+                if (post.isDeleted) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color  = Color(0xFFFF4444).copy(alpha = 0.15f),
+                        shape  = MaterialTheme.shapes.extraSmall
+                    ) {
+                        Text(
+                            text       = "DELETED",
+                            color      = Color(0xFFFF4444),
+                            fontSize   = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier   = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ChanText(
@@ -604,78 +937,146 @@ fun PostCard(
 
         Spacer(Modifier.height(8.dp))
 
-        // ── Image ─────────────────────────────────────────────
+        // ── Image ────────────────────────────────────────
         if (imageUrl != null) {
-            AsyncImage(
-                model              = imageUrl,
-                contentDescription = "Post image",
-                modifier           = Modifier
+            val isVideo = remember(post.imageExt) {
+                post.imageExt?.endsWith(".webm", ignoreCase = true) == true ||
+                        post.imageExt?.endsWith(".mp4", ignoreCase = true) == true
+            }
+            Box(
+                modifier = Modifier
                     .size(120.dp)
                     .padding(bottom = 4.dp)
-            )
+                    .then(
+                        // Deleted posts: image is not clickable
+                        if (post.isDeleted) Modifier
+                        else Modifier.clickable { onImageClick(post) }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (post.isDeleted) {
+                    // Greyed-out placeholder for deleted media
+                    Surface(
+                        color    = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        shape    = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector        = Icons.Default.DeleteForever,
+                                    contentDescription = "Deleted media",
+                                    tint               = Color(0xFFFF4444).copy(alpha = 0.6f),
+                                    modifier           = Modifier.size(28.dp)
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text     = if (isVideo) "Video\ndeleted" else "Image\ndeleted",
+                                    color    = Color(0xFFFF4444).copy(alpha = 0.6f),
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    AsyncImage(
+                        model              = imageUrl,
+                        contentDescription = "Post image",
+                        modifier           = Modifier.fillMaxSize()
+                    )
+                    if (isVideo) {
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            color = Color.Black.copy(alpha = 0.5f),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector        = Icons.Default.PlayArrow,
+                                    contentDescription = "Video",
+                                    tint               = Color.White,
+                                    modifier           = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             ChanText(
                 text    = "${post.imageExt?.removePrefix(".")?.uppercase()} | ${post.fileSizeKb()}",
                 variant = TextVariant.Meta,
-                color   = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color   = MaterialTheme.colorScheme.onSurface.copy(
+                    alpha = if (post.isDeleted) 0.3f else 0.5f
+                )
             )
             Spacer(Modifier.height(4.dp))
         }
 
-        // ── Comment ───────────────────────────────────────────
+        // ── Comment ──────────────────────────────────────
         if (post.safeComment().isNotEmpty()) {
             ChanHtmlText(
                 html         = post.safeComment(),
-                modifier     = Modifier.fillMaxWidth(),
-                onReplyClick = onReplyClick
+                modifier     = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (post.isDeleted)
+                            Modifier  // strikethrough applied via textDecoration inside
+                        else Modifier
+                    ),
+                onReplyClick = if (post.isDeleted) null else { clickedId ->
+                    onReplyClick(clickedId, post)
+                },
+                textDecoration = if (post.isDeleted) TextDecoration.LineThrough else null
             )
             Spacer(Modifier.height(6.dp))
         }
 
-        // ── Date ──────────────────────────────────────────────
+        // ── Date ────────────────────────────────────────
         ChanText(
             text    = dateStr,
             variant = TextVariant.Meta,
             color   = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
         )
 
-        // ── Bottom row: reply count icon + REPLY button ───────
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            // ←← reply count — only shown if someone replied to this post
-            if (replyCount > 0) {
-                Row(
-                    modifier          = Modifier
-                        .clickable { onShowRepliesClick(post) }
-                        .padding(vertical = 4.dp, horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+        if (!post.isDeleted) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment     = Alignment.CenterVertically
+            ) {
+                // reply count — only shown if someone replied to this post
+                if (replyCount > 0) {
+                    Row(
+                        modifier          = Modifier
+                            .clickable { onShowRepliesClick(post) }
+                            .padding(vertical = 4.dp, horizontal = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text       = "$replyCount",
+                            color      = ChanGreen,
+                            fontWeight = FontWeight.Bold,
+                            fontSize   = 12.sp
+                        )
+                        Icon(
+                            Icons.Default.Reply,
+                            contentDescription = "View replies",
+                            tint     = ChanGreen,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                }
+                TextButton(onClick = { /* TODO: post composer */ }) {
                     Text(
-                        text       = "$replyCount",
+                        text       = "REPLY",
                         color      = ChanGreen,
                         fontWeight = FontWeight.Bold,
                         fontSize   = 12.sp
                     )
-                    Icon(
-                        Icons.Default.Reply,
-                        contentDescription = "View replies",
-                        tint     = ChanGreen,
-                        modifier = Modifier.size(20.dp)
-                    )
                 }
-            } else {
-                Spacer(Modifier.width(1.dp))
-            }
-
-            TextButton(onClick = { /* TODO: post composer */ }) {
-                Text(
-                    text       = "REPLY",
-                    color      = ChanGreen,
-                    fontWeight = FontWeight.Bold,
-                    fontSize   = 12.sp
-                )
             }
         }
     }
@@ -684,13 +1085,22 @@ fun PostCard(
 // ── Compact post item used inside the reply popup ─────────────
 @Composable
 fun PopupPostItem(
-    post         : PostDto,
-    boardTag     : String,
-    onReplyClick : (Long) -> Unit = {}
+    post               : PostDto,
+    boardTag           : String,
+    threadNo           : Long = 0L,
+    allPosts           : List<PostDto> = emptyList(),
+    onReplyClick       : (Long, PostDto) -> Unit = { _, _ -> },
+    onShowRepliesClick : (PostDto) -> Unit = {},
+    onImageClick       : (PostDto) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val timeAgo = remember(post.unixTime) {
         post.unixTime?.let { relativeTime(it) } ?: ""
     }
+    val replyCount = remember(allPosts, post.id) {
+        allPosts.count { it.repliesTo(post.id) }
+    }
+
     Column(modifier = Modifier.fillMaxWidth()) {
         // Header
         Row(
@@ -699,9 +1109,29 @@ fun PopupPostItem(
             verticalAlignment     = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ChanText(text = post.safeName(), variant = TextVariant.Username, color = ChanGreen)
+                ChanText(
+                    text    = post.safeName(),
+                    variant = TextVariant.Username,
+                    color   = if (post.isDeleted) Color(0xFFFF6B6B) else ChanGreen
+                )
                 Spacer(Modifier.width(6.dp))
                 ChanText(text = post.id.toString(), variant = TextVariant.Meta, color = TextLink)
+                // [DELETED] badge
+                if (post.isDeleted) {
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        color  = Color(0xFFFF4444).copy(alpha = 0.15f),
+                        shape  = MaterialTheme.shapes.extraSmall
+                    ) {
+                        Text(
+                            text       = "DELETED",
+                            color      = Color(0xFFFF4444),
+                            fontSize   = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier   = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
+                        )
+                    }
+                }
             }
             ChanText(
                 text    = timeAgo,
@@ -711,22 +1141,116 @@ fun PopupPostItem(
         }
         Spacer(Modifier.height(6.dp))
         // Image (compact)
-        post.imageUrl(boardTag)?.let { url ->
-            AsyncImage(
-                model              = url,
-                contentDescription = null,
-                modifier           = Modifier
+        val imageUrl = remember(post.imageId, boardTag, threadNo) {
+            if (post.hasImage()) {
+                val localThumb = com.chan.mimi.data.repository.SavedThreadsHelper.getLocalThumbFile(context, boardTag, threadNo, post.id)
+                if (localThumb.exists()) {
+                    localThumb.absolutePath
+                } else {
+                    "https://t.4cdn.org/$boardTag/${post.imageId}s.jpg"
+                }
+            } else null
+        }
+        if (imageUrl != null) {
+            val isVideo = remember(post.imageExt) {
+                post.imageExt?.endsWith(".webm", ignoreCase = true) == true ||
+                        post.imageExt?.endsWith(".mp4", ignoreCase = true) == true
+            }
+            Box(
+                modifier = Modifier
                     .size(80.dp)
                     .padding(bottom = 4.dp)
-            )
+                    .then(
+                        if (post.isDeleted) Modifier
+                        else Modifier.clickable { onImageClick(post) }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (post.isDeleted) {
+                    // Greyed-out placeholder for deleted media
+                    Surface(
+                        color    = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        shape    = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector        = Icons.Default.DeleteForever,
+                                    contentDescription = "Deleted media",
+                                    tint               = Color(0xFFFF4444).copy(alpha = 0.6f),
+                                    modifier           = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text       = if (isVideo) "Video deleted" else "Image deleted",
+                                    color      = Color(0xFFFF4444).copy(alpha = 0.6f),
+                                    fontSize   = 7.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign  = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    AsyncImage(
+                        model              = imageUrl,
+                        contentDescription = null,
+                        modifier           = Modifier.fillMaxSize()
+                    )
+                    if (isVideo) {
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            color = Color.Black.copy(alpha = 0.5f),
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector        = Icons.Default.PlayArrow,
+                                    contentDescription = "Video",
+                                    tint               = Color.White,
+                                    modifier           = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Comment
         if (post.safeComment().isNotEmpty()) {
             ChanHtmlText(
-                html         = post.safeComment(),
-                modifier     = Modifier.fillMaxWidth(),
-                onReplyClick = onReplyClick
+                html           = post.safeComment(),
+                modifier       = Modifier.fillMaxWidth(),
+                onReplyClick   = if (post.isDeleted) null else { clickedId ->
+                    onReplyClick(clickedId, post)
+                },
+                textDecoration = if (post.isDeleted) TextDecoration.LineThrough else null
             )
+        }
+        // Replied box (shows replies to this post)
+        if (!post.isDeleted && replyCount > 0) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier          = Modifier
+                    .clickable { onShowRepliesClick(post) }
+                    .padding(vertical = 4.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text       = "$replyCount",
+                    color      = ChanGreen,
+                    fontWeight = FontWeight.Bold,
+                    fontSize   = 12.sp
+                )
+                Spacer(Modifier.width(2.dp))
+                Icon(
+                    Icons.Default.Reply,
+                    contentDescription = "View replies",
+                    tint               = ChanGreen,
+                    modifier           = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }

@@ -37,6 +37,9 @@ android {
     buildFeatures {
         compose = true
     }
+    lint {
+        disable += "UnsafeOptInUsageError"
+    }
 }
 
 dependencies {
@@ -60,6 +63,9 @@ dependencies {
     implementation(libs.retrofit.gson)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.coil.compose)
+    implementation("io.coil-kt:coil-gif:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation(libs.okhttp.logging)
     implementation(libs.datastore)
