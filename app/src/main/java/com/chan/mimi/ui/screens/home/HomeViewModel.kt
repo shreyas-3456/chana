@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val chanRepository  = ChanRepository()
+    private val chanRepository  = ChanRepository
     private val prefsRepository = BoardPreferencesRepository(application)
 
     private val _allBoards = MutableStateFlow<List<BoardDto>>(emptyList())

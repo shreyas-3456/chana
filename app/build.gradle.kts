@@ -69,6 +69,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation(libs.okhttp.logging)
     implementation(libs.datastore)
+    implementation(libs.androidx.work.runtime)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

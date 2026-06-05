@@ -23,13 +23,21 @@ data class SavedThreadDetail(
     val boardTag: String,
     val thread: ThreadDto,
     val posts: List<PostDto>,
-    val saveTime: Long
+    val saveTime: Long,
+    val is404: Boolean = false,
+    val pollingEnabled: Boolean = false
 )
 
 class SavedThreadsRepository private constructor(private val context: Context) {
 
     private val gson = Gson()
     private val client = OkHttpClient()
+
+    /** Shared polling interval (seconds) — delegates to [PollingSettingsRepository]. */
+    private val pollingSettings = PollingSettingsRepository.getInstance(context)
+    val pollingIntervalFlow: StateFlow<Int> = pollingSettings.intervalSecondsFlow
+
+    fun getPollingInterval(): Int = pollingSettings.getIntervalSeconds()
 
     private val _savedThreadsFlow = MutableStateFlow<List<SavedThreadDetail>>(emptyList())
     val savedThreadsFlow: StateFlow<List<SavedThreadDetail>> = _savedThreadsFlow.asStateFlow()
@@ -138,12 +146,109 @@ class SavedThreadsRepository private constructor(private val context: Context) {
         loadSavedThreads()
     }
 
+    /**
+     * Update only the posts list of an already-saved thread (preserves images on disk).
+     * Called by the polling logic to keep the saved data fresh without re-downloading media.
+     */
+    suspend fun updateSavedPosts(boardTag: String, threadNo: Long, posts: List<PostDto>) = withContext(Dispatchers.IO) {
+        val threadDir = SavedThreadsHelper.getThreadDir(context, boardTag, threadNo)
+        val gzFile    = File(threadDir, "thread.json.gz")
+        if (!gzFile.exists()) return@withContext          // not saved — nothing to update
+
+        try {
+            val existing = gson.fromJson(readGzip(gzFile), SavedThreadDetail::class.java)
+            val livePosts = posts.filter { !it.isDeleted }
+            val updatedThread = existing.thread.copy(
+                replyCount = (livePosts.size - 1).coerceAtLeast(0),
+                imageCount = livePosts.count { it.hasImage() }
+            )
+            val updated  = existing.copy(thread = updatedThread, posts = posts, is404 = false)
+            writeGzip(gzFile, gson.toJson(updated))
+
+            // Also download images for any brand-new posts that have media
+            val existingIds = existing.posts.map { it.id }.toHashSet()
+            val imagesDir   = File(threadDir, "images")
+            if (!imagesDir.exists()) imagesDir.mkdirs()
+
+            for (post in posts) {
+                if (post.id in existingIds || !post.hasImage()) continue
+                val imageExt = post.imageExt ?: ""
+                val thumbFile = SavedThreadsHelper.getLocalThumbFile(context, boardTag, threadNo, post.id)
+                val fullFile  = SavedThreadsHelper.getLocalFullFile(context, boardTag, threadNo, post.id, imageExt)
+                try {
+                    if (!thumbFile.exists()) downloadFileTo("https://t.4cdn.org/$boardTag/${post.imageId}s.jpg", thumbFile)
+                    if (!fullFile.exists())  downloadFileTo("https://i.4cdn.org/$boardTag/${post.imageId}$imageExt", fullFile)
+                } catch (e: Exception) {
+                    Log.w("SavedThreadsRepository", "Could not download media for new post ${post.id}: ${e.message}")
+                }
+            }
+
+            loadSavedThreads()
+        } catch (e: Exception) {
+            Log.e("SavedThreadsRepository", "updateSavedPosts failed: ${e.message}")
+        }
+    }
+
+    suspend fun markAs404(boardTag: String, threadNo: Long) = withContext(Dispatchers.IO) {
+        val threadDir = SavedThreadsHelper.getThreadDir(context, boardTag, threadNo)
+        val gzFile    = File(threadDir, "thread.json.gz")
+        if (!gzFile.exists()) return@withContext
+
+        try {
+            val existing = gson.fromJson(readGzip(gzFile), SavedThreadDetail::class.java)
+            val updated  = existing.copy(is404 = true)
+            writeGzip(gzFile, gson.toJson(updated))
+            loadSavedThreads()
+        } catch (e: Exception) {
+            Log.e("SavedThreadsRepository", "markAs404 failed: ${e.message}")
+        }
+    }
+
+    suspend fun setPollingEnabled(boardTag: String, threadNo: Long, enabled: Boolean) = withContext(Dispatchers.IO) {
+        val threadDir = SavedThreadsHelper.getThreadDir(context, boardTag, threadNo)
+        val gzFile = File(threadDir, "thread.json.gz")
+        if (gzFile.exists()) {
+            try {
+                val json = readGzip(gzFile)
+                val detail = gson.fromJson(json, SavedThreadDetail::class.java)
+                val updated = detail.copy(pollingEnabled = enabled)
+                writeGzip(gzFile, gson.toJson(updated))
+                loadSavedThreads()
+            } catch (e: Exception) {
+                Log.e("SavedThreadsRepository", "setPollingEnabled failed: ${e.message}")
+            }
+        }
+
+        // Reschedule or cancel background sync worker
+        val anyEnabled = _savedThreadsFlow.value.any { !it.is404 && it.pollingEnabled }
+        val intervalSeconds = getPollingInterval()
+        if (enabled && intervalSeconds > 0) {
+            SavedThreadsPollingScheduler.schedulePollingForThread(context, boardTag, threadNo, intervalSeconds, replace = true)
+        } else {
+            SavedThreadsPollingScheduler.cancelPollingForThread(context, boardTag, threadNo)
+        }
+
+        if (!anyEnabled || intervalSeconds <= 0) {
+            SavedThreadsPollingScheduler.cancelPolling(context)
+        } else {
+            SavedThreadsPollingScheduler.updatePersistentNotification(context)
+        }
+    }
+
     suspend fun deleteThread(boardTag: String, threadNo: Long) = withContext(Dispatchers.IO) {
         val threadDir = SavedThreadsHelper.getThreadDir(context, boardTag, threadNo)
         if (threadDir.exists()) {
             deleteRecursively(threadDir)
         }
+        SavedThreadsPollingScheduler.cancelPollingForThread(context, boardTag, threadNo)
         loadSavedThreads()
+        val anyEnabled = _savedThreadsFlow.value.any { !it.is404 && it.pollingEnabled }
+        val intervalSeconds = getPollingInterval()
+        if (anyEnabled && intervalSeconds > 0) {
+            SavedThreadsPollingScheduler.schedulePolling(context, intervalSeconds, replace = true)
+        } else {
+            SavedThreadsPollingScheduler.cancelPolling(context)
+        }
     }
 
     private fun deleteRecursively(file: File) {

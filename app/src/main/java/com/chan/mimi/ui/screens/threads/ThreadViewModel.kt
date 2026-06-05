@@ -16,10 +16,13 @@ sealed class ThreadUiState {
 
 class ThreadViewModel : ViewModel() {
 
-    private val repository = ChanRepository()
+    private val repository = ChanRepository
 
     private val _uiState = MutableStateFlow<ThreadUiState>(ThreadUiState.Loading)
     val uiState: StateFlow<ThreadUiState> = _uiState
+
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
 
     // Track which board is currently loaded so we never re-fetch the same one
     private var loadedBoard: String? = null
@@ -38,6 +41,21 @@ class ThreadViewModel : ViewModel() {
                 },
                 onFailure = { ThreadUiState.Error(it.message ?: "Unknown error") }
             )
+        }
+    }
+
+    fun refreshCatalog(board: String) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            val result = repository.getCatalog(board)
+            _uiState.value = result.fold(
+                onSuccess = {
+                    loadedBoard = board
+                    ThreadUiState.Success(it)
+                },
+                onFailure = { ThreadUiState.Error(it.message ?: "Unknown error") }
+            )
+            _isRefreshing.value = false
         }
     }
 }

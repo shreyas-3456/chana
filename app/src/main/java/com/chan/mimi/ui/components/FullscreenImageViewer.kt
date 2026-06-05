@@ -3,12 +3,15 @@ package com.chan.mimi.ui.components
 import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.widget.Toast
+import java.io.File
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,6 +31,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -68,20 +72,21 @@ import kotlin.math.abs
 
 // ── Data model ──────────────────────────────────────────────────
 data class ImageViewerItem(
-    val imageUrl    : String,
-    val fileUrl     : String = imageUrl,
-    val filename    : String = "",
-    val fileInfo    : String = "",
-    val postUrl     : String = "",
-    val username    : String = "Anonymous",
-    val postId      : String = "",
-    val subject     : String = "",
-    val commentHtml : String = "",
-    val timeStr     : String = "",
-    val timeAgo     : String = "",
-    val replyCount  : Int    = 0,
-    val imageCount  : Int    = 0,
-    val replies     : List<ImageViewerItem> = emptyList()
+    val imageUrl     : String,
+    val fileUrl      : String = imageUrl,
+    val filename     : String = "",
+    val fileInfo     : String = "",
+    val postUrl      : String = "",
+    val username     : String = "Anonymous",
+    val postId       : String = "",
+    val subject      : String = "",
+    val commentHtml  : String = "",
+    val timeStr      : String = "",
+    val timeAgo      : String = "",
+    val replyCount   : Int    = 0,
+    val imageCount   : Int    = 0,
+    val replies      : List<ImageViewerItem> = emptyList(),
+    val thumbnailUrl : String = ""
 )
 
 // ── Main composable ──────────────────────────────────────────────
@@ -371,10 +376,11 @@ fun FullscreenImageViewer(
                 modifier = Modifier.fillMaxSize()
             ) {
                 GalleryGrid(
-                    items       = items,
-                    context     = context,
-                    onBack      = { showGallery = false },
-                    onItemClick = { index ->
+                    items        = items,
+                    currentIndex = pagerState.currentPage,
+                    context      = context,
+                    onBack       = { showGallery = false },
+                    onItemClick  = { index ->
                         showGallery = false
                         scope.launch { pagerState.scrollToPage(index) }
                     }
@@ -511,11 +517,21 @@ fun FullscreenImageViewer(
 // ── Gallery grid overlay ─────────────────────────────────────────
 @Composable
 private fun GalleryGrid(
-    items       : List<ImageViewerItem>,
-    context     : Context,
-    onBack      : () -> Unit,
-    onItemClick : (Int) -> Unit
+    items        : List<ImageViewerItem>,
+    currentIndex : Int,
+    context      : Context,
+    onBack       : () -> Unit,
+    onItemClick  : (Int) -> Unit
 ) {
+    val gridState = rememberLazyGridState()
+
+    // Scroll to current item instantly (no animation) when gallery opens
+    LaunchedEffect(Unit) {
+        if (currentIndex > 0) {
+            gridState.scrollToItem(currentIndex)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -565,6 +581,7 @@ private fun GalleryGrid(
 
             // 2-column grid
             LazyVerticalGrid(
+                state                 = gridState,
                 columns               = GridCells.Fixed(2),
                 contentPadding        = PaddingValues(2.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -574,16 +591,20 @@ private fun GalleryGrid(
                 itemsIndexed(items) { index, item ->
                     val isVideo = item.imageUrl.endsWith(".webm", ignoreCase = true) ||
                                   item.imageUrl.endsWith(".mp4",  ignoreCase = true)
-                    val thumbUrl = item.imageUrl
-                        .replace("i.4cdn.org", "t.4cdn.org")
-                        .let { url ->
-                            val lastDot = url.lastIndexOf('.')
-                            if (lastDot != -1) {
-                                url.substring(0, lastDot) + "s.jpg"
-                            } else {
-                                url
+                    val thumbUrl = if (item.thumbnailUrl.isNotEmpty()) {
+                        item.thumbnailUrl
+                    } else {
+                        item.imageUrl
+                            .replace("i.4cdn.org", "t.4cdn.org")
+                            .let { url ->
+                                val lastDot = url.lastIndexOf('.')
+                                if (lastDot != -1) {
+                                    url.substring(0, lastDot) + "s.jpg"
+                                } else {
+                                    url
+                                }
                             }
-                        }
+                    }
 
                     Box(
                         modifier         = Modifier
@@ -831,9 +852,79 @@ private fun formatMs(ms: Long): String {
     return "%02d:%02d".format(secs / 60, secs % 60)
 }
 
+private fun copyLocalFileToDownloads(context: Context, filePath: String, filename: String) {
+    try {
+        val sourceFile = File(filePath)
+        if (!sourceFile.exists()) {
+            Toast.makeText(context, "Source file not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val rawFilename = filename.ifEmpty { sourceFile.name }
+        val cleanFilename = rawFilename.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+
+        val mimeType = when {
+            cleanFilename.endsWith(".jpg", ignoreCase = true) || cleanFilename.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
+            cleanFilename.endsWith(".png", ignoreCase = true) -> "image/png"
+            cleanFilename.endsWith(".gif", ignoreCase = true) -> "image/gif"
+            cleanFilename.endsWith(".webm", ignoreCase = true) -> "video/webm"
+            cleanFilename.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
+            else -> "application/octet-stream"
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, cleanFilename)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            if (uri != null) {
+                resolver.openOutputStream(uri)?.use { outputStream ->
+                    sourceFile.inputStream().use { inputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                }
+                Toast.makeText(context, "Saved to Downloads: $cleanFilename", Toast.LENGTH_SHORT).show()
+            } else {
+                throw Exception("Failed to insert media store entry")
+            }
+        } else {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!downloadsDir.exists()) {
+                downloadsDir.mkdirs()
+            }
+            val destFile = File(downloadsDir, cleanFilename)
+            sourceFile.inputStream().use { inputStream ->
+                destFile.outputStream().use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+            val mediaScanIntent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply {
+                data = Uri.fromFile(destFile)
+            }
+            context.sendBroadcast(mediaScanIntent)
+            Toast.makeText(context, "Saved to Downloads: $cleanFilename", Toast.LENGTH_SHORT).show()
+        }
+    } catch (e: Exception) {
+        Toast.makeText(context, "Failed to save file: ${e.message}", Toast.LENGTH_LONG).show()
+    }
+}
+
 private fun downloadFile(context: Context, url: String, filename: String) {
     if (url.isEmpty()) return
     try {
+        if (url.startsWith("file://")) {
+            val filePath = Uri.parse(url).path?.let { Uri.decode(it) } ?: url.removePrefix("file://")
+            copyLocalFileToDownloads(context, filePath, filename)
+            return
+        }
+        if (url.startsWith("content://")) {
+            Toast.makeText(context, "Content URIs not supported for copy", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val rawFilename = filename.ifEmpty { "4chan_${System.currentTimeMillis()}" }
         // Replace illegal filesystem characters with underscores to prevent DownloadManager crash
         val cleanFilename = rawFilename.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifEmpty { "4chan_${System.currentTimeMillis()}" }

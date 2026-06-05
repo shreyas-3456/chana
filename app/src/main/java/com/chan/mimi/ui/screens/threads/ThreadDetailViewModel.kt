@@ -24,7 +24,7 @@ sealed class ThreadDetailUiState {
 
 class ThreadDetailViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = ChanRepository()
+    private val repository = ChanRepository
     private val savedThreadsRepository = SavedThreadsRepository.getInstance(application)
 
     private val _uiState     = MutableStateFlow<ThreadDetailUiState>(ThreadDetailUiState.Loading)
@@ -45,6 +45,9 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
     private val _pollCountdown = MutableStateFlow(30)
     val pollCountdown: StateFlow<Int> = _pollCountdown
 
+    private val _is404 = MutableStateFlow(false)
+    val is404: StateFlow<Boolean> = _is404
+
     private var lastPostCount   = 0
     private var pollingJob: Job? = null
     private var currentBoard    = ""
@@ -56,6 +59,24 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
      */
     private var localPosts: List<PostDto> = emptyList()
 
+    fun initializeWithCache(board: String, threadNo: Long) {
+        if (currentBoard == board && currentThreadNo == threadNo) return
+        currentBoard = board
+        currentThreadNo = threadNo
+        lastPostCount = 0
+        _hasNewPosts.value = false
+        _is404.value = false
+
+        val cached = repository.getCachedThread(board, threadNo)
+        if (cached != null) {
+            localPosts         = cached
+            _uiState.value     = ThreadDetailUiState.Success(cached)
+        } else {
+            localPosts         = emptyList()
+            _uiState.value     = ThreadDetailUiState.Loading
+        }
+    }
+
     fun startPolling(board: String, threadNo: Long, forceRestart: Boolean = false) {
         // Already polling this exact thread — don't restart
         if (!forceRestart && currentBoard == board && currentThreadNo == threadNo && pollingJob?.isActive == true) return
@@ -65,12 +86,22 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
         currentThreadNo = threadNo
         pollingJob?.cancel()
 
-        // Only reset to Loading + clear counts when switching to a different thread
         if (switchingThread) {
             lastPostCount      = 0
-            localPosts         = emptyList()
             _hasNewPosts.value = false
-            _uiState.value     = ThreadDetailUiState.Loading
+            _is404.value       = false
+
+            // Check the shared singleton cache synchronously first.
+            // If we already have data, show it immediately — no Loading flash,
+            // no blank frame during the slide animation.
+            val cached = repository.getCachedThread(board, threadNo)
+            if (cached != null) {
+                localPosts         = cached
+                _uiState.value     = ThreadDetailUiState.Success(cached)
+            } else {
+                localPosts         = emptyList()
+                _uiState.value     = ThreadDetailUiState.Loading
+            }
         }
 
         // Check if saved
@@ -163,6 +194,7 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
 
         result.fold(
             onSuccess = { apiPosts ->
+                _is404.value = false
                 val merged   = mergePosts(localPosts, apiPosts)
                 val newCount = apiPosts.size  // count only live posts, not deleted stubs
                 when {
@@ -189,10 +221,21 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
                     }
                 }
             },
-            onFailure = {
+            onFailure = { throwable ->
+                if (throwable is kotlinx.coroutines.CancellationException) return@fold
+                
+                val isHttp404 = throwable is retrofit2.HttpException && throwable.code() == 404
+                if (isHttp404) {
+                    _is404.value = true
+                }
+                
                 // Never wipe existing posts on a background poll failure
                 if (_uiState.value !is ThreadDetailUiState.Success) {
-                    _uiState.value = ThreadDetailUiState.Error(it.message ?: "Unknown error")
+                    if (isHttp404) {
+                        _uiState.value = ThreadDetailUiState.Error("Thread not found (404)")
+                    } else {
+                        _uiState.value = ThreadDetailUiState.Error(throwable.message ?: "Unknown error")
+                    }
                 }
             }
         )

@@ -870,19 +870,14 @@ fun PostCard(
         allPosts.count { it.repliesTo(post.id) }
     }
 
-    // Deleted posts get a red-tinted background
-    val cardModifier = if (post.isDeleted) {
-        Modifier
-            .fillMaxWidth()
-            .background(
-                color = Color(0xFFFF4444).copy(alpha = 0.07f),
-                shape = MaterialTheme.shapes.medium
-            )
-    } else {
-        Modifier.fillMaxWidth()
-    }
+    val deletedCardColor = Color(0xFF3A241F)
+    val deletedAccent = Color(0xFFFF9A62)
+    val cardModifier = Modifier.fillMaxWidth()
 
-    ChanCard(modifier = cardModifier) {
+    ChanCard(
+        modifier = cardModifier,
+        containerColor = if (post.isDeleted) deletedCardColor else MaterialTheme.colorScheme.surface
+    ) {
 
         // ── Header ──────────────────────────────────────
         Row(
@@ -894,7 +889,7 @@ fun PostCard(
                 ChanText(
                     text    = post.safeName(),
                     variant = TextVariant.Username,
-                    color   = if (post.isDeleted) Color(0xFFFF6B6B) else ChanGreen
+                    color   = if (post.isDeleted) deletedAccent else ChanGreen
                 )
                 Spacer(Modifier.width(8.dp))
                 ChanText(
@@ -906,12 +901,12 @@ fun PostCard(
                 if (post.isDeleted) {
                     Spacer(Modifier.width(8.dp))
                     Surface(
-                        color  = Color(0xFFFF4444).copy(alpha = 0.15f),
+                        color  = deletedAccent.copy(alpha = 0.18f),
                         shape  = MaterialTheme.shapes.extraSmall
                     ) {
                         Text(
                             text       = "DELETED",
-                            color      = Color(0xFFFF4444),
+                            color      = deletedAccent,
                             fontSize   = 9.sp,
                             fontWeight = FontWeight.Bold,
                             modifier   = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
@@ -947,60 +942,48 @@ fun PostCard(
                 modifier = Modifier
                     .size(120.dp)
                     .padding(bottom = 4.dp)
-                    .then(
-                        // Deleted posts: image is not clickable
-                        if (post.isDeleted) Modifier
-                        else Modifier.clickable { onImageClick(post) }
-                    ),
+                    .clickable { onImageClick(post) },
                 contentAlignment = Alignment.Center
             ) {
-                if (post.isDeleted) {
-                    // Greyed-out placeholder for deleted media
+                AsyncImage(
+                    model              = imageUrl,
+                    contentDescription = "Post image",
+                    modifier           = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (post.isDeleted) Modifier.graphicsLayer { alpha = 0.55f }
+                            else Modifier
+                        )
+                )
+                if (isVideo) {
                     Surface(
-                        color    = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        shape    = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxSize()
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = Color.Black.copy(alpha = 0.5f),
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector        = Icons.Default.DeleteForever,
-                                    contentDescription = "Deleted media",
-                                    tint               = Color(0xFFFF4444).copy(alpha = 0.6f),
-                                    modifier           = Modifier.size(28.dp)
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    text     = if (isVideo) "Video\ndeleted" else "Image\ndeleted",
-                                    color    = Color(0xFFFF4444).copy(alpha = 0.6f),
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                            }
+                            Icon(
+                                imageVector        = Icons.Default.PlayArrow,
+                                contentDescription = "Video",
+                                tint               = Color.White,
+                                modifier           = Modifier.size(20.dp)
+                            )
                         }
                     }
-                } else {
-                    AsyncImage(
-                        model              = imageUrl,
-                        contentDescription = "Post image",
-                        modifier           = Modifier.fillMaxSize()
-                    )
-                    if (isVideo) {
-                        Surface(
-                            shape = MaterialTheme.shapes.extraLarge,
-                            color = Color.Black.copy(alpha = 0.5f),
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector        = Icons.Default.PlayArrow,
-                                    contentDescription = "Video",
-                                    tint               = Color.White,
-                                    modifier           = Modifier.size(20.dp)
-                                )
-                            }
-                        }
+                }
+                if (post.isDeleted) {
+                    Surface(
+                        color    = deletedAccent.copy(alpha = 0.9f),
+                        shape    = MaterialTheme.shapes.extraSmall,
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    ) {
+                        Text(
+                            text       = "DELETED FROM THREAD",
+                            color      = Color.Black,
+                            fontSize   = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier   = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
                     }
                 }
             }
@@ -1101,7 +1084,20 @@ fun PopupPostItem(
         allPosts.count { it.repliesTo(post.id) }
     }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    val deletedAccent = Color(0xFFFF9A62)
+    val popupModifier = if (post.isDeleted) {
+        Modifier
+            .fillMaxWidth()
+            .background(
+                color = Color(0xFF3A241F),
+                shape = MaterialTheme.shapes.small
+            )
+            .padding(8.dp)
+    } else {
+        Modifier.fillMaxWidth()
+    }
+
+    Column(modifier = popupModifier) {
         // Header
         Row(
             modifier              = Modifier.fillMaxWidth(),
@@ -1112,7 +1108,7 @@ fun PopupPostItem(
                 ChanText(
                     text    = post.safeName(),
                     variant = TextVariant.Username,
-                    color   = if (post.isDeleted) Color(0xFFFF6B6B) else ChanGreen
+                    color   = if (post.isDeleted) deletedAccent else ChanGreen
                 )
                 Spacer(Modifier.width(6.dp))
                 ChanText(text = post.id.toString(), variant = TextVariant.Meta, color = TextLink)
@@ -1120,12 +1116,12 @@ fun PopupPostItem(
                 if (post.isDeleted) {
                     Spacer(Modifier.width(6.dp))
                     Surface(
-                        color  = Color(0xFFFF4444).copy(alpha = 0.15f),
+                        color  = deletedAccent.copy(alpha = 0.18f),
                         shape  = MaterialTheme.shapes.extraSmall
                     ) {
                         Text(
                             text       = "DELETED",
-                            color      = Color(0xFFFF4444),
+                            color      = deletedAccent,
                             fontSize   = 8.sp,
                             fontWeight = FontWeight.Bold,
                             modifier   = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
@@ -1160,59 +1156,48 @@ fun PopupPostItem(
                 modifier = Modifier
                     .size(80.dp)
                     .padding(bottom = 4.dp)
-                    .then(
-                        if (post.isDeleted) Modifier
-                        else Modifier.clickable { onImageClick(post) }
-                    ),
+                    .clickable { onImageClick(post) },
                 contentAlignment = Alignment.Center
             ) {
-                if (post.isDeleted) {
-                    // Greyed-out placeholder for deleted media
+                AsyncImage(
+                    model              = imageUrl,
+                    contentDescription = null,
+                    modifier           = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (post.isDeleted) Modifier.graphicsLayer { alpha = 0.55f }
+                            else Modifier
+                        )
+                )
+                if (isVideo) {
                     Surface(
-                        color    = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        shape    = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxSize()
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = Color.Black.copy(alpha = 0.5f),
+                        modifier = Modifier.size(24.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    imageVector        = Icons.Default.DeleteForever,
-                                    contentDescription = "Deleted media",
-                                    tint               = Color(0xFFFF4444).copy(alpha = 0.6f),
-                                    modifier           = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text       = if (isVideo) "Video deleted" else "Image deleted",
-                                    color      = Color(0xFFFF4444).copy(alpha = 0.6f),
-                                    fontSize   = 7.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign  = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                            }
+                            Icon(
+                                imageVector        = Icons.Default.PlayArrow,
+                                contentDescription = "Video",
+                                tint               = Color.White,
+                                modifier           = Modifier.size(14.dp)
+                            )
                         }
                     }
-                } else {
-                    AsyncImage(
-                        model              = imageUrl,
-                        contentDescription = null,
-                        modifier           = Modifier.fillMaxSize()
-                    )
-                    if (isVideo) {
-                        Surface(
-                            shape = MaterialTheme.shapes.extraLarge,
-                            color = Color.Black.copy(alpha = 0.5f),
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector        = Icons.Default.PlayArrow,
-                                    contentDescription = "Video",
-                                    tint               = Color.White,
-                                    modifier           = Modifier.size(14.dp)
-                                )
-                            }
-                        }
+                }
+                if (post.isDeleted) {
+                    Surface(
+                        color    = deletedAccent.copy(alpha = 0.9f),
+                        shape    = MaterialTheme.shapes.extraSmall,
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    ) {
+                        Text(
+                            text       = "DELETED",
+                            color      = Color.Black,
+                            fontSize   = 7.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier   = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
                     }
                 }
             }

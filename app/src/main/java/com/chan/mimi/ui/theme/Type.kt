@@ -14,50 +14,56 @@ val provider = GoogleFont.Provider(
     certificates      = R.array.com_google_android_gms_fonts_certs
 )
 
-val JetBrainsMonoFont = GoogleFont("JetBrains Mono")
+// Google Sans — the native Android 12+ / Material You system font
+val GoogleSansFont = GoogleFont("Google Sans")
 
-val JetBrainsMono = FontFamily(
+val GoogleSans = FontFamily(
     Font(
-        googleFont   = JetBrainsMonoFont,
+        googleFont   = GoogleSansFont,
         fontProvider = provider,
         weight       = FontWeight.Normal
     ),
     Font(
-        googleFont   = JetBrainsMonoFont,
+        googleFont   = GoogleSansFont,
+        fontProvider = provider,
+        weight       = FontWeight.Medium
+    ),
+    Font(
+        googleFont   = GoogleSansFont,
         fontProvider = provider,
         weight       = FontWeight.SemiBold
     ),
     Font(
-        googleFont   = JetBrainsMonoFont,
+        googleFont   = GoogleSansFont,
         fontProvider = provider,
         weight       = FontWeight.Bold
     )
 )
 
 val TypographyUsername = TextStyle(
-    fontFamily = JetBrainsMono,
+    fontFamily = GoogleSans,
     fontSize   = 13.sp,
     fontWeight = FontWeight.SemiBold,
     lineHeight = 16.sp
 )
 
 val TypographyBody = TextStyle(
-    fontFamily = JetBrainsMono,
+    fontFamily = GoogleSans,
     fontSize   = 13.sp,
     fontWeight = FontWeight.Normal,
-    lineHeight = 18.sp
+    lineHeight = 19.sp
 )
 
 val TypographyMeta = TextStyle(
-    fontFamily = JetBrainsMono,
+    fontFamily = GoogleSans,
     fontSize   = 11.sp,
     fontWeight = FontWeight.Normal,
     lineHeight = 14.sp
 )
 
 val TypographyLabel = TextStyle(
-    fontFamily = JetBrainsMono,
+    fontFamily = GoogleSans,
     fontSize   = 12.sp,
-    fontWeight = FontWeight.Bold,
+    fontWeight = FontWeight.Medium,
     lineHeight = 14.sp
 )
