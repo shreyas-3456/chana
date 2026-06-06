@@ -21,7 +21,12 @@ object WatchedThreadsPollingScheduler {
     private const val STATUS_CHANNEL_ID = "watched_threads_polling_status"
     private const val STATUS_CHANNEL_NAME = "Watched Threads Polling Status"
 
-    fun schedulePolling(context: Context, intervalSeconds: Int, replace: Boolean = false) {
+    fun schedulePolling(
+        context: Context,
+        intervalSeconds: Int,
+        replace: Boolean = false,
+        append: Boolean = false
+    ) {
         val workManager = WorkManager.getInstance(context)
 
         if (intervalSeconds <= 0) {
@@ -37,10 +42,17 @@ object WatchedThreadsPollingScheduler {
 
         workManager.enqueueUniqueWork(
             UNIQUE_WORK_NAME,
-            if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
+            when {
+                append -> ExistingWorkPolicy.APPEND_OR_REPLACE
+                replace -> ExistingWorkPolicy.REPLACE
+                else -> ExistingWorkPolicy.KEEP
+            },
             workRequest
         )
-        Log.d("WatchedPollingScheduler", "Enqueued work with interval: ${intervalSeconds}s (replace=$replace).")
+        Log.d(
+            "WatchedPollingScheduler",
+            "Enqueued work with interval: ${intervalSeconds}s (replace=$replace, append=$append)."
+        )
         updatePersistentNotification(context)
     }
 

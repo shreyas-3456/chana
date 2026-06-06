@@ -11,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +41,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chan.mimi.data.model.PostDto
 import com.chan.mimi.data.repository.SavedThreadsHelper
 import com.chan.mimi.ui.components.*
+import com.chan.mimi.ui.screens.threads.PostHighlightType
 import com.chan.mimi.ui.screens.threads.PopupPostItem
 import com.chan.mimi.ui.screens.threads.PostCard
 import com.chan.mimi.ui.screens.threads.relativeTime
@@ -55,7 +58,11 @@ fun SavedThreadDetailScreen(
     threadNo: Long,
     threadTitle: String,
     onBackClick: () -> Unit,
-    viewModel: SavedThreadDetailViewModel = viewModel()
+    onOpenBoardThreadList: () -> Unit,
+    highlightPostId: Long? = null,
+    addedHighlightPostIds: List<Long> = emptyList(),
+    deletedHighlightPostIds: List<Long> = emptyList(),
+    viewModel: SavedThreadDetailViewModel = viewModel(key = "$boardTag/$threadNo")
 ) {
     val uiState        by viewModel.uiState.collectAsStateWithLifecycle()
     val isRefreshing   by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -82,9 +89,18 @@ fun SavedThreadDetailScreen(
     var replyPopup     by remember { mutableStateOf<com.chan.mimi.ui.screens.threads.ReplyPopup?>(null) }
     var viewerStartIndex by remember { mutableStateOf<Int?>(null) }
     var activeIndex    by remember { mutableStateOf(0) }
+    var pendingScrollPostId by remember(boardTag, threadNo, highlightPostId) {
+        mutableStateOf(highlightPostId)
+    }
 
     val detail = (uiState as? SavedThreadDetailUiState.Success)?.detail
     val posts  = detail?.posts ?: emptyList()
+    val addedHighlightSet = remember(boardTag, threadNo, addedHighlightPostIds) {
+        addedHighlightPostIds.toSet()
+    }
+    val deletedHighlightSet = remember(boardTag, threadNo, deletedHighlightPostIds) {
+        deletedHighlightPostIds.toSet()
+    }
 
     val displayedPosts = remember(searchQuery, posts) {
         if (searchQuery.isEmpty()) posts
@@ -104,6 +120,20 @@ fun SavedThreadDetailScreen(
             if (originalIndex != -1) {
                 listState.scrollToItem(originalIndex + 2) // search bar + spacer
             }
+        }
+    }
+
+    LaunchedEffect(posts, pendingScrollPostId) {
+        val targetPost = pendingScrollPostId ?: return@LaunchedEffect
+        val originalIndex = displayedPosts.indexOfFirst { it.id == targetPost }
+        if (originalIndex != -1) {
+            val lazyListIndex = originalIndex + 2 // search bar + spacer
+            val layoutInfo = listState.layoutInfo
+            val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
+            val itemSize = layoutInfo.visibleItemsInfo.firstOrNull { it.index == lazyListIndex }?.size ?: 0
+            val offset = if (viewportHeight > 0) (viewportHeight - itemSize) / 2 else 0
+            listState.animateScrollToItem(lazyListIndex, -offset)
+            pendingScrollPostId = null
         }
     }
 
@@ -212,6 +242,22 @@ fun SavedThreadDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .pointerInput(viewerStartIndex) {
+                    if (viewerStartIndex != null) return@pointerInput
+                    var totalDragX = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDragX = 0f },
+                        onDragEnd = {
+                            if (totalDragX > 120f) {
+                                onOpenBoardThreadList()
+                            }
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            totalDragX += dragAmount
+                            change.consume()
+                        }
+                    )
+                }
         ) {
             // Refreshing progress bar
             if (isRefreshing) {
@@ -326,11 +372,19 @@ fun SavedThreadDetailScreen(
                             }
                             item { Spacer(Modifier.height(4.dp)) }
                             items(displayedPosts, key = { it.id }) { post ->
+                                val highlightType = when {
+                                    post.id in addedHighlightSet -> PostHighlightType.ADDED
+                                    post.id in deletedHighlightSet -> PostHighlightType.DELETED
+                                    else -> PostHighlightType.NONE
+                                }
                                 PostCard(
                                     post               = post,
                                     boardTag           = boardTag,
                                     threadNo           = threadNo,
                                     allPosts           = posts,
+                                    highlightType      = highlightType,
+                                    allowDeletedInteractions = true,
+                                    showOverflowMenu   = true,
                                     onReplyClick       = { postNo, source ->
                                         val quoted = posts.find { it.id == postNo }
                                         if (quoted != null) {
@@ -521,6 +575,7 @@ fun SavedThreadDetailScreen(
                             boardTag           = boardTag,
                             threadNo           = threadNo,
                             allPosts           = posts,
+                            allowDeletedInteractions = true,
                             onReplyClick       = { postNo, source ->
                                 val found = posts.find { it.id == postNo }
                                 if (found != null) replyPopup = com.chan.mimi.ui.screens.threads.ReplyPopup(quotedPost = found, sourcePost = source)
@@ -549,6 +604,7 @@ fun SavedThreadDetailScreen(
                             boardTag           = boardTag,
                             threadNo           = threadNo,
                             allPosts           = posts,
+                            allowDeletedInteractions = true,
                             onReplyClick       = { postNo, source ->
                                 val found = posts.find { it.id == postNo }
                                 if (found != null) replyPopup = com.chan.mimi.ui.screens.threads.ReplyPopup(quotedPost = found, sourcePost = source)
@@ -572,6 +628,7 @@ fun SavedThreadDetailScreen(
                                 boardTag           = boardTag,
                                 threadNo           = threadNo,
                                 allPosts           = posts,
+                                allowDeletedInteractions = true,
                                 onReplyClick       = { postNo, source ->
                                     val found = posts.find { it.id == postNo }
                                     if (found != null) replyPopup = com.chan.mimi.ui.screens.threads.ReplyPopup(quotedPost = found, sourcePost = source)
@@ -603,6 +660,7 @@ fun SavedThreadDetailScreen(
                                     boardTag           = boardTag,
                                     threadNo           = threadNo,
                                     allPosts           = posts,
+                                    allowDeletedInteractions = true,
                                     onReplyClick       = { postNo, source ->
                                         val found = posts.find { it.id == postNo }
                                         if (found != null) replyPopup = com.chan.mimi.ui.screens.threads.ReplyPopup(quotedPost = found, sourcePost = source)

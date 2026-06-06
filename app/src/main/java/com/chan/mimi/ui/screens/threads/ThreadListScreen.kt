@@ -1,39 +1,64 @@
 // FILE: ui/screens/threads/ThreadListScreen.kt
 package com.chan.mimi.ui.screens.threads
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
 import android.text.Html
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.chan.mimi.data.model.BoardDto
 import com.chan.mimi.data.model.ThreadDto
+import com.chan.mimi.data.model.WatchedThread
+import com.chan.mimi.data.repository.ChanRepository
+import com.chan.mimi.data.repository.SavedThreadsRepository
 import com.chan.mimi.ui.components.*
 import com.chan.mimi.ui.theme.ChanGreen
 import com.chan.mimi.ui.theme.ElevatedDark
 import com.chan.mimi.ui.theme.TextLink
 import com.chan.mimi.ui.components.ChanHtmlText
 import com.chan.mimi.ui.components.QuoteGreen
+import com.chan.mimi.ui.components.copyTextToClipboard
+import com.chan.mimi.ui.components.openExternalUrl
+import com.chan.mimi.ui.components.sharePlainText
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -41,6 +66,12 @@ fun ThreadListScreen(
     board         : BoardDto,
     onBackClick   : () -> Unit,
     onThreadClick : (ThreadDto) -> Unit,
+    watchedThreads: List<WatchedThread> = emptyList(),
+    onOpenWatchedThread: (WatchedThread) -> Unit = {},
+    onRemoveWatchedThread: (WatchedThread) -> Unit = {},
+    onToggleWatchedPolling: (WatchedThread, Boolean) -> Unit = { _, _ -> },
+    onOpenSaved: () -> Unit = {},
+    bottomBarPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel     : ThreadViewModel = viewModel()
 ) {
     // Load catalog when screen first appears
@@ -48,9 +79,25 @@ fun ThreadListScreen(
         viewModel.loadCatalog(board.tag)
     }
 
+    val context = LocalContext.current
     val uiState       by viewModel.uiState.collectAsStateWithLifecycle()
+    val isRefreshing  by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val sortOption    by viewModel.sortOption.collectAsStateWithLifecycle()
     var searchQuery   by remember { mutableStateOf("") }
+    var menuExpanded  by remember { mutableStateOf(false) }
+    var scrollToTopRequest by remember { mutableStateOf(0) }
+    var isWatchedBarExpanded by remember { mutableStateOf(false) }
     val focusManager  = LocalFocusManager.current
+    val refreshTransition = rememberInfiniteTransition(label = "threadListRefresh")
+    val refreshRotation by refreshTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "threadListRefreshRotation"
+    )
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -77,6 +124,54 @@ fun ThreadListScreen(
                             contentDescription = "Back",
                             tint               = MaterialTheme.colorScheme.onBackground
                         )
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            scrollToTopRequest++
+                            viewModel.refreshCatalog(board.tag)
+                        },
+                        enabled = !isRefreshing
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Reload threads",
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.graphicsLayer {
+                                rotationZ = if (isRefreshing) refreshRotation else 0f
+                            }
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options",
+                                tint = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.entries.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text("Sort by ${option.label}") },
+                                leadingIcon = {
+                                    if (sortOption == option) {
+                                        Icon(Icons.Default.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.setSortOption(option)
+                                    menuExpanded = false
+                                    scrollToTopRequest++
+                                }
+                            )
+                        }
+                    }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -121,7 +216,7 @@ fun ThreadListScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                         ChanButton(
                             text    = "RETRY",
-                            onClick = { viewModel.loadCatalog(board.tag) }
+                            onClick = { viewModel.refreshCatalog(board.tag) }
                         )
                     }
                 }
@@ -130,6 +225,11 @@ fun ThreadListScreen(
             // ── Success ───────────────────────────────────────
             is ThreadUiState.Success -> {
                 val threads = (uiState as ThreadUiState.Success).threads
+                val boardWatchedThreads = remember(watchedThreads, board.tag) {
+                    watchedThreads
+                        .filter { it.boardTag == board.tag }
+                        .sortedByDescending { it.addedAt }
+                }
                 val displayedThreads = remember(searchQuery, threads) {
                     if (searchQuery.isEmpty()) threads
                     else threads.filter {
@@ -137,13 +237,33 @@ fun ThreadListScreen(
                         it.safeComment().contains(searchQuery, ignoreCase = true)
                     }
                 }
-                val imageThreads = remember(displayedThreads) {
-                    displayedThreads.filter { it.imageId != null && it.imageExt != null }
+                val sortedThreads = remember(displayedThreads, sortOption) {
+                    when (sortOption) {
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.REPLY_COUNT -> displayedThreads.sortedByDescending { it.safeReplyCount() }
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.NEWEST -> displayedThreads.sortedByDescending { it.unixTime ?: 0L }
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.OLDEST -> displayedThreads.sortedBy { it.unixTime ?: Long.MAX_VALUE }
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.SUBJECT -> displayedThreads.sortedBy { it.safeSubject().ifBlank { it.safeName() }.lowercase() }
+                        com.chan.mimi.ui.screens.threads.ThreadSortOption.IMAGE_COUNT -> displayedThreads.sortedByDescending { it.safeImageCount() }
+                    }
+                }
+                val imageThreads = remember(sortedThreads) {
+                    sortedThreads.filter { it.imageId != null && it.imageExt != null }
                 }
                 val listState = rememberLazyListState()
                 val scope = rememberCoroutineScope()
                 var viewerStartIndex by remember { mutableStateOf<Int?>(null) }
                 var activeIndex by remember { mutableStateOf(0) }
+                val watchedBarHeight = 56.dp
+                val watchedBarBottomPadding = bottomBarPadding
+                val savedThreadsRepository = remember(context) {
+                    SavedThreadsRepository.getInstance(context.applicationContext)
+                }
+
+                LaunchedEffect(scrollToTopRequest) {
+                    if (scrollToTopRequest > 0) {
+                        listState.scrollToItem(0)
+                    }
+                }
 
                 // Hide keyboard when user starts scrolling
                 LaunchedEffect(listState.isScrollInProgress) {
@@ -154,7 +274,7 @@ fun ThreadListScreen(
                 LaunchedEffect(viewerStartIndex, activeIndex) {
                     if (viewerStartIndex != null && activeIndex >= 0 && activeIndex < imageThreads.size) {
                         val targetThread = imageThreads[activeIndex]
-                        val originalIndex = displayedThreads.indexOf(targetThread)
+                        val originalIndex = sortedThreads.indexOf(targetThread)
                         if (originalIndex != -1) {
                             val lazyListIndex = originalIndex + 2 // +2 for search bar + spacer
                             val layoutInfo = listState.layoutInfo
@@ -170,13 +290,48 @@ fun ThreadListScreen(
                     }
                 }
 
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(board.tag, boardWatchedThreads) {
+                            var totalDragX = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { totalDragX = 0f },
+                                onDragEnd = {
+                                    when {
+                                        totalDragX > 120f -> onBackClick()
+                                        totalDragX < -120f -> {
+                                            val latestWatched = boardWatchedThreads.firstOrNull()
+                                            if (latestWatched != null) {
+                                                onOpenWatchedThread(latestWatched)
+                                            } else {
+                                                onOpenSaved()
+                                            }
+                                        }
+                                    }
+                                },
+                                onHorizontalDrag = { change, dragAmount ->
+                                    totalDragX += dragAmount
+                                    change.consume()
+                                }
+                            )
+                        }
+                ) {
+                    if (isRefreshing) {
+                        LinearProgressIndicator(
+                            color = ChanGreen,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(innerPadding)
+                        )
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(innerPadding)
                             .padding(horizontal = 8.dp),
+                        contentPadding = PaddingValues(bottom = watchedBarHeight + watchedBarBottomPadding + 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         // ── Sticky search bar ──────────────────────────────
@@ -238,11 +393,38 @@ fun ThreadListScreen(
 
                         item { Spacer(modifier = Modifier.height(4.dp)) }
 
-                        items(displayedThreads) { thread ->
+                        items(sortedThreads, key = { it.id }) { thread ->
                             ThreadCard(
                                 thread        = thread,
                                 boardTag      = board.tag,
                                 onThreadClick = onThreadClick,
+                                onSaveThread  = { threadToSave ->
+                                    scope.launch {
+                                        Toast.makeText(context, "Saving thread offline...", Toast.LENGTH_SHORT).show()
+                                        try {
+                                            val result = ChanRepository.getThread(board.tag, threadToSave.id, forceRefresh = true)
+                                            result.fold(
+                                                onSuccess = { posts ->
+                                                    savedThreadsRepository.saveThread(board.tag, threadToSave, posts)
+                                                    Toast.makeText(context, "Thread saved offline!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                onFailure = { error ->
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Failed to load thread: ${error.message ?: "Unknown error"}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
+                                            )
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                context,
+                                                "Failed to save thread: ${e.message ?: "Unknown error"}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
                                 onImageClick  = { clickedThread ->
                                     val index = imageThreads.indexOf(clickedThread)
                                     if (index != -1) {
@@ -306,6 +488,26 @@ fun ThreadListScreen(
                             }
                         )
                     }
+
+                    WatchedThreadsBar(
+                        threads = watchedThreads,
+                        activeThreadNo = -1L,
+                        boardTag = board.tag,
+                        isExpanded = isWatchedBarExpanded,
+                        onToggleExpand = { isWatchedBarExpanded = !isWatchedBarExpanded },
+                        onSwitchThread = { watchedThread ->
+                            onOpenWatchedThread(watchedThread)
+                        },
+                        onRemove = { watchedThread ->
+                            onRemoveWatchedThread(watchedThread)
+                        },
+                        onTogglePolling = { watchedThread, enabled ->
+                            onToggleWatchedPolling(watchedThread, enabled)
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = watchedBarBottomPadding)
+                    )
                 }
             }
         }
@@ -321,13 +523,16 @@ fun ThreadCard(
     thread        : ThreadDto,
     boardTag      : String,
     onThreadClick : (ThreadDto) -> Unit,
+    onSaveThread  : (ThreadDto) -> Unit,
     onImageClick  : (ThreadDto) -> Unit
 ) {
-    // Strip HTML tags from comment — 4chan returns HTML in comments
+    val context = LocalContext.current
+    var menuExpanded by remember { mutableStateOf(false) }
+    val threadUrl = "https://boards.4chan.org/$boardTag/thread/${thread.id}"
     val cleanComment = remember(thread.comment) {
         val raw = thread.safeComment()
         if (raw.isEmpty()) ""
-        else Html.fromHtml(raw, Html.FROM_HTML_MODE_COMPACT).toString()
+        else Html.fromHtml(raw, Html.FROM_HTML_MODE_COMPACT).toString().trim()
     }
 
     // Build thumbnail URL if thread has an image
@@ -338,25 +543,92 @@ fun ThreadCard(
     }
 
     ChanCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 168.dp),
         onClick  = { onThreadClick(thread) }
     ) {
-        // Row 1 — Username + Post ID
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ChanText(
-                text    = thread.safeName(),        // ← was thread.name
-                variant = TextVariant.Username,
-                color   = ChanGreen
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            ChanText(
-                text    = thread.id.toString(),
-                variant = TextVariant.Meta,
-                color   = TextLink
-            )
+        // Row 1 — Username + Post ID + Three dots
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChanText(
+                    text    = thread.safeName(),
+                    variant = TextVariant.Username,
+                    color   = ChanGreen
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                ChanText(
+                    text    = thread.id.toString(),
+                    variant = TextVariant.Meta,
+                    color   = TextLink
+                )
+            }
+
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Thread options",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Copy Thread Link") },
+                        onClick = {
+                            copyTextToClipboard(context, "Thread link", threadUrl)
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy Text") },
+                        onClick = {
+                            val textToCopy = if (thread.safeSubject().isNotEmpty()) {
+                                "${thread.safeSubject()}\n\n$cleanComment"
+                            } else {
+                                cleanComment
+                            }
+                            copyTextToClipboard(context, "Thread text", textToCopy.ifEmpty { threadUrl })
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Open Thread Link") },
+                        onClick = {
+                            openExternalUrl(context, threadUrl)
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share Thread") },
+                        onClick = {
+                            sharePlainText(context, threadUrl)
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to Saved") },
+                        onClick = {
+                            onSaveThread(thread)
+                            menuExpanded = false
+                        }
+                    )
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Row 2 — Image + Message
         Row {
@@ -367,8 +639,8 @@ fun ThreadCard(
                 }
                 Box(
                     modifier = Modifier
-                        .size(80.dp)
-                        .padding(end = 10.dp)
+                        .size(104.dp)
+                        .padding(end = 12.dp)
                         .clickable { onImageClick(thread) },
                     contentAlignment = Alignment.Center
                 ) {
@@ -381,14 +653,14 @@ fun ThreadCard(
                         Surface(
                             shape = MaterialTheme.shapes.extraLarge,
                             color = Color.Black.copy(alpha = 0.5f),
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(34.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector        = Icons.Default.PlayArrow,
                                     contentDescription = "Video",
                                     tint               = Color.White,
-                                    modifier           = Modifier.size(16.dp)
+                                    modifier           = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -399,8 +671,8 @@ fun ThreadCard(
                     color    = ElevatedDark,
                     shape    = MaterialTheme.shapes.small,
                     modifier = Modifier
-                        .size(80.dp)
-                        .padding(end = 10.dp)
+                        .size(104.dp)
+                        .padding(end = 12.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         ChanText(text = "NO IMG", variant = TextVariant.Meta)
@@ -414,22 +686,23 @@ fun ThreadCard(
                         text     = thread.safeSubject(),
                         variant  = TextVariant.Username,
                         color    = QuoteGreen,              // ← green title
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                 }
                 ChanHtmlText(                               // ← replaces ChanText
                     html     = thread.safeComment(),
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth()
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth(),
+                    onPlainTextClick = { onThreadClick(thread) }
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         ChanDivider()
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Row 3 — Reply count + button
         Row(

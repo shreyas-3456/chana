@@ -45,7 +45,11 @@ class WatchedThreadsPollingWorker(
 
         if (AppLifecycleTracker.isAppInForeground) {
             Log.d("WatchedThreadsWorker", "App is in foreground; skipping background poll.")
-            WatchedThreadsPollingScheduler.schedulePolling(applicationContext, intervalSeconds, replace = true)
+            WatchedThreadsPollingScheduler.schedulePolling(
+                applicationContext,
+                intervalSeconds,
+                append = true
+            )
             return Result.success()
         }
 
@@ -72,7 +76,11 @@ class WatchedThreadsPollingWorker(
             }
         }
 
-        WatchedThreadsPollingScheduler.schedulePolling(applicationContext, intervalSeconds, replace = true)
+        WatchedThreadsPollingScheduler.schedulePolling(
+            applicationContext,
+            intervalSeconds,
+            append = true
+        )
         return Result.success()
     }
 

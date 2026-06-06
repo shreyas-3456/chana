@@ -153,18 +153,19 @@ fun FullscreenImageViewer(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        // ── Horizontal drag → edge swipe gestures ──
+                        // Keep viewer swipes aligned with the list/detail screens:
+                        // right swipe backs out, left swipe opens the next view.
                         .pointerInput(page) {
                             var totalDragX = 0f
                             detectHorizontalDragGestures(
                                 onDragStart = { totalDragX = 0f },
                                 onDragEnd = {
-                                    // Swipe left (RTL) on page 0 → close viewer / go back
-                                    if (page == 0 && totalDragX < -100f) {
+                                    // Swipe right (LTR) on page 0 -> close viewer / go back
+                                    if (page == 0 && totalDragX > 100f) {
                                         onSwipeLeftToRight?.invoke()
                                     }
-                                    // Swipe right (LTR) → open gallery
-                                    if (totalDragX > 100f) {
+                                    // Swipe left (RTL) -> open thread or gallery
+                                    if (totalDragX < -100f) {
                                         if (onSwipeRightToLeft != null) onSwipeRightToLeft.invoke()
                                         else showGallery = true
                                     }

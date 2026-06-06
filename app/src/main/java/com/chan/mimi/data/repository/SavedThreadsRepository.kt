@@ -5,6 +5,7 @@ import android.util.Log
 import com.chan.mimi.data.model.PostDto
 import com.chan.mimi.data.model.ThreadDto
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -125,6 +126,7 @@ class SavedThreadsRepository private constructor(private val context: Context) {
                     try {
                         downloadFileTo(thumbUrl, thumbFile)
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         Log.e("SavedThreadsRepository", "Failed to download thumb for post $postId: ${e.message}")
                     }
                 }
@@ -136,6 +138,7 @@ class SavedThreadsRepository private constructor(private val context: Context) {
                     try {
                         downloadFileTo(fullUrl, fullFile)
                     } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         Log.e("SavedThreadsRepository", "Failed to download full media for post $postId: ${e.message}")
                     }
                 }
@@ -179,6 +182,7 @@ class SavedThreadsRepository private constructor(private val context: Context) {
                     if (!thumbFile.exists()) downloadFileTo("https://t.4cdn.org/$boardTag/${post.imageId}s.jpg", thumbFile)
                     if (!fullFile.exists())  downloadFileTo("https://i.4cdn.org/$boardTag/${post.imageId}$imageExt", fullFile)
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     Log.w("SavedThreadsRepository", "Could not download media for new post ${post.id}: ${e.message}")
                 }
             }
@@ -196,9 +200,17 @@ class SavedThreadsRepository private constructor(private val context: Context) {
 
         try {
             val existing = gson.fromJson(readGzip(gzFile), SavedThreadDetail::class.java)
-            val updated  = existing.copy(is404 = true)
+            val updated  = existing.copy(is404 = true, pollingEnabled = false)
             writeGzip(gzFile, gson.toJson(updated))
             loadSavedThreads()
+            SavedThreadsPollingScheduler.cancelPollingForThread(context, boardTag, threadNo)
+            val anyEnabled = _savedThreadsFlow.value.any { !it.is404 && it.pollingEnabled }
+            val intervalSeconds = getPollingInterval()
+            if (anyEnabled && intervalSeconds > 0) {
+                SavedThreadsPollingScheduler.schedulePolling(context, intervalSeconds, replace = true)
+            } else {
+                SavedThreadsPollingScheduler.cancelPolling(context)
+            }
         } catch (e: Exception) {
             Log.e("SavedThreadsRepository", "markAs404 failed: ${e.message}")
         }

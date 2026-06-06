@@ -53,7 +53,8 @@ object SavedThreadsPollingScheduler {
         boardTag: String,
         threadNo: Long,
         intervalSeconds: Int,
-        replace: Boolean = false
+        replace: Boolean = false,
+        append: Boolean = false
     ) {
         val workManager = WorkManager.getInstance(context)
         if (intervalSeconds <= 0) {
@@ -74,10 +75,17 @@ object SavedThreadsPollingScheduler {
 
         workManager.enqueueUniqueWork(
             uniqueWorkName(boardTag, threadNo),
-            if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
+            when {
+                append -> ExistingWorkPolicy.APPEND_OR_REPLACE
+                replace -> ExistingWorkPolicy.REPLACE
+                else -> ExistingWorkPolicy.KEEP
+            },
             workRequest
         )
-        Log.d("SavedPollingScheduler", "Enqueued work for $boardTag/$threadNo with interval: ${intervalSeconds}s (replace=$replace).")
+        Log.d(
+            "SavedPollingScheduler",
+            "Enqueued work for $boardTag/$threadNo with interval: ${intervalSeconds}s (replace=$replace, append=$append)."
+        )
         updatePersistentNotification(context)
     }
 

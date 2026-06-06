@@ -8,6 +8,7 @@ import com.chan.mimi.data.model.PostDto
 import com.chan.mimi.data.model.ThreadDto
 import com.chan.mimi.data.repository.ChanRepository
 import com.chan.mimi.data.repository.SavedThreadsRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -262,6 +263,9 @@ class ThreadDetailViewModel(application: Application) : AndroidViewModel(applica
                     savedThreadsRepository.saveThread(currentBoard, threadDto, posts)
                     _isSaved.value = true
                     android.widget.Toast.makeText(getApplication(), "Thread saved offline!", android.widget.Toast.LENGTH_SHORT).show()
+                } catch (e: CancellationException) {
+                    Log.d("ThreadDetailViewModel", "Save thread cancelled.")
+                    throw e
                 } catch (e: Exception) {
                     Log.e("ThreadDetailViewModel", "Failed to save thread: ${e.message}", e)
                     android.widget.Toast.makeText(getApplication(), "Failed to save thread: ${e.message}", android.widget.Toast.LENGTH_LONG).show()

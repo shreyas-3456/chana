@@ -4,13 +4,14 @@ import android.text.Html
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
@@ -18,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -31,6 +33,9 @@ import coil.compose.AsyncImage
 import com.chan.mimi.data.repository.SavedThreadDetail
 import com.chan.mimi.data.repository.SavedThreadsHelper
 import com.chan.mimi.ui.components.*
+import com.chan.mimi.ui.components.copyTextToClipboard
+import com.chan.mimi.ui.components.openExternalUrl
+import com.chan.mimi.ui.components.sharePlainText
 import com.chan.mimi.ui.theme.ChanGreen
 import com.chan.mimi.ui.theme.ElevatedDark
 import com.chan.mimi.ui.theme.TextLink
@@ -66,6 +71,7 @@ private fun formatSeconds(seconds: Int): String {
 fun SavedScreen(
     innerPadding : PaddingValues,
     onThreadClick : (SavedThreadDetail) -> Unit,
+    onOpenBoardThreadList: () -> Unit,
     viewModel    : SavedViewModel = viewModel()
 ) {
     val savedThreads    by viewModel.savedThreads.collectAsStateWithLifecycle()
@@ -79,6 +85,21 @@ fun SavedScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(innerPadding)
+            .pointerInput(Unit) {
+                var totalDragX = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { totalDragX = 0f },
+                    onDragEnd = {
+                        if (totalDragX > 120f) {
+                            onOpenBoardThreadList()
+                        }
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        totalDragX += dragAmount
+                        change.consume()
+                    }
+                )
+            }
     ) {
         if (savedThreads.isEmpty()) {
             Column(
@@ -399,11 +420,14 @@ fun SavedThreadCard(
     val context = LocalContext.current
     val thread = detail.thread
     val boardTag = detail.boardTag
+    val threadUrl = remember(boardTag, thread.id) {
+        "https://boards.4chan.org/$boardTag/thread/${thread.id}"
+    }
 
     val cleanComment = remember(thread.comment) {
         val raw = thread.safeComment()
         if (raw.isEmpty()) ""
-        else Html.fromHtml(raw, Html.FROM_HTML_MODE_COMPACT).toString()
+        else Html.fromHtml(raw, Html.FROM_HTML_MODE_COMPACT).toString().trim()
     }
 
     val localThumb = remember(boardTag, thread.id) {
@@ -477,12 +501,12 @@ fun SavedThreadCard(
                 }
 
                 IconButton(
-                    onClick = onUnsaveClick,
+                    onClick = { showMenu = true },
                     modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Remove from saved",
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Saved thread options",
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         modifier = Modifier.size(18.dp)
                     )
@@ -533,7 +557,8 @@ fun SavedThreadCard(
                     ChanHtmlText(
                         html = thread.safeComment(),
                         maxLines = 4,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        onPlainTextClick = onClick
                     )
                 }
             }
@@ -572,6 +597,12 @@ fun SavedThreadCard(
             expanded               = showMenu,
             onDismissRequest       = { showMenu = false },
             detail                 = detail,
+            threadUrl              = threadUrl,
+            threadText             = if (thread.safeSubject().isNotEmpty()) {
+                "${thread.safeSubject()}\n\n$cleanComment"
+            } else {
+                cleanComment
+            },
             currentIntervalSeconds = currentIntervalSeconds,
             onTogglePolling        = onTogglePolling,
             onSetPollingInterval   = onSetPollingInterval,
@@ -587,15 +618,47 @@ private fun SavedPollingDropdownMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     detail: SavedThreadDetail,
+    threadUrl: String,
+    threadText: String,
     currentIntervalSeconds: Int,
     onTogglePolling: (Boolean) -> Unit,
     onSetPollingInterval: (Int) -> Unit,
     onUnsaveClick: () -> Unit
 ) {
+    val context = LocalContext.current
     DropdownMenu(
         expanded         = expanded,
         onDismissRequest = onDismissRequest
     ) {
+        DropdownMenuItem(
+            text = { Text("Copy Thread Link") },
+            onClick = {
+                onDismissRequest()
+                copyTextToClipboard(context, "Thread link", threadUrl)
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Copy Text") },
+            onClick = {
+                onDismissRequest()
+                copyTextToClipboard(context, "Thread text", threadText.ifEmpty { threadUrl })
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Open Thread Link") },
+            onClick = {
+                onDismissRequest()
+                openExternalUrl(context, threadUrl)
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Share Thread") },
+            onClick = {
+                onDismissRequest()
+                sharePlainText(context, threadUrl)
+            }
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
         DropdownMenuItem(
             text = { Text(if (detail.pollingEnabled) "Disable background sync" else "Enable background sync") },
             onClick = {
